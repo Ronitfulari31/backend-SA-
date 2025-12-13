@@ -3,7 +3,7 @@ from flask_cors import CORS
 from flask_jwt_extended import JWTManager
 from pymongo import MongoClient
 import logging
-from flask_socketio import SocketIO
+# from flask_socketio import SocketIO  # Temporarily disabled for Python 3.13 compatibility
 from app.config import config
 from app.middleware.error_handler import register_error_handlers
 
@@ -14,8 +14,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global SocketIO instance
-socketio = SocketIO(cors_allowed_origins="*")
+# Global SocketIO instance - Temporarily disabled
+# socketio = SocketIO(cors_allowed_origins="*")
+socketio = None  # Placeholder
 
 
 def create_app(config_name='development'):
@@ -28,7 +29,7 @@ def create_app(config_name='development'):
     # Initialize extensions
     CORS(app, origins=app.config.get('CORS_ORIGINS', '*'))
     JWTManager(app)
-    socketio.init_app(app)
+    # socketio.init_app(app)  # Temporarily disabled
 
     # MongoDB connection
     try:
@@ -52,9 +53,9 @@ def create_app(config_name='development'):
     # Register global error handlers
     register_error_handlers(app)
 
-    # Register routes and socket events
-    from app.routes.realtime import register_realtime_events, realtime_bp
-    app.register_blueprint(realtime_bp)
-    register_realtime_events(socketio)
+    # Register routes and socket events - Temporarily disabled
+    # from app.routes.realtime import register_realtime_events, realtime_bp
+    # app.register_blueprint(realtime_bp)
+    # register_realtime_events(socketio)
 
     return app

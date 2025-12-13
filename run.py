@@ -6,17 +6,18 @@ from app import create_app, socketio
 from app.database import init_db, close_db
 
 # Import all blueprints
-from app.routes.sentiment import sentiment_bp
-from app.routes.translation import translation_bp
-from app.routes.summarization import summarization_bp
-from app.routes.keyword_extraction import keyword_bp
+# from app.routes.sentiment import sentiment_bp       # Replaced by SentimentService
+# from app.routes.translation import translation_bp     # Replaced by TranslationService
+# from app.routes.summarization import summarization_bp # Replaced by pipeline (future)
+# from app.routes.keyword_extraction import keyword_bp  # Replaced by EventDetectionService
 from app.routes.auth import auth_bp
 from app.routes.documents import documents_bp
-from app.routes.ner import ner_bp
-from app.routes.classification import classification_bp
+# from app.routes.ner import ner_bp                     # Replaced by LocationExtractionService
+# from app.routes.classification import classification_bp # Replaced by EventDetectionService
 from app.routes.reports import reports_bp
 from app.routes.settings import settings_bp
 from app.routes.dashboard import dashboard_bp
+from app.routes.evaluation import evaluation_bp
 # Uncomment if you later add a realtime Blueprint
 # from app.routes.realtime import realtime_bp
 
@@ -37,29 +38,30 @@ app = create_app()
 init_db(app)
 
 # Register all blueprints
-app.register_blueprint(sentiment_bp, url_prefix='/api/documents')
-app.register_blueprint(translation_bp, url_prefix='/api/documents')
-app.register_blueprint(summarization_bp, url_prefix='/api/documents')
-app.register_blueprint(keyword_bp, url_prefix='/api/documents')
+# app.register_blueprint(sentiment_bp, url_prefix='/api/documents')
+# app.register_blueprint(translation_bp, url_prefix='/api/documents')
+# app.register_blueprint(summarization_bp, url_prefix='/api/documents')
+# app.register_blueprint(keyword_bp, url_prefix='/api/documents')
 app.register_blueprint(auth_bp, url_prefix='/api/auth')
 app.register_blueprint(documents_bp, url_prefix='/api/documents')
-app.register_blueprint(ner_bp, url_prefix='/api/documents')
-app.register_blueprint(classification_bp, url_prefix='/api/documents')
+# app.register_blueprint(ner_bp, url_prefix='/api/documents')
+# app.register_blueprint(classification_bp, url_prefix='/api/documents')
 app.register_blueprint(reports_bp, url_prefix='/api')
 app.register_blueprint(settings_bp, url_prefix='/api')
-app.register_blueprint(dashboard_bp, url_prefix='/api')
+app.register_blueprint(dashboard_bp, url_prefix='/api/dashboard')
+app.register_blueprint(evaluation_bp, url_prefix='/api/evaluation')
 # Uncomment if realtime routes are added:
 # app.register_blueprint(realtime_bp, url_prefix='/api')
 
 # Log registration status
-logger.info("✓ Sentiment Analysis API registered")
-logger.info("✓ Translation API registered")
-logger.info("✓ Summarization API registered")
-logger.info("✓ Keyword Extraction API registered")
+# logger.info("✓ Sentiment Analysis API registered")
+# logger.info("✓ Translation API registered")
+# logger.info("✓ Summarization API registered")
+# logger.info("✓ Keyword Extraction API registered")
 logger.info("✓ Authentication API registered")
 logger.info("✓ Documents API registered")
-logger.info("✓ Named Entity Recognition API registered")
-logger.info("✓ Document Classification API registered")
+# logger.info("✓ Named Entity Recognition API registered")
+# logger.info("✓ Document Classification API registered")
 
 
 # ---------------- Health Check ----------------
@@ -150,20 +152,21 @@ def internal_error(error):
     return {'status': 'error', 'message': 'Internal server error'}, 500
 
 
-# ---------------- Socket.IO Events ----------------
-@socketio.on('connect')
-def handle_connect():
-    logger.info("Client connected")
+# ---------------- SocketIO Events (Temporarily Disabled) ----------------
+# @socketio.on('connect')
+# def handle_connect():
+#     logger.info("Client connected")
 
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    logger.info("Client disconnected")
+# @socketio.on('disconnect')
+# def handle_disconnect():
+#     logger.info("Client disconnected")
 
 
-@socketio.on('send_update')
-def handle_update(data):
-    socketio.emit('update', data, broadcast=True)
+# @socketio.on('send_update')
+# def handle_update(data):
+#     socketio.emit('update', data, broadcast=True)
+
 
 
 # ---------------- Graceful Shutdown ----------------
@@ -194,9 +197,10 @@ if __name__ == '__main__':
     logger.info("  ✓ Documents (Upload, List, NLP)")
     logger.info("=" * 60)
 
-    socketio.run(
-        app,
+    # Use standard Flask run instead of socketio.run (temporarily disabled)
+    app.run(
         debug=os.getenv('FLASK_DEBUG', True),
         host=os.getenv('FLASK_HOST', '0.0.0.0'),
         port=int(os.getenv('FLASK_PORT', 5000))
     )
+

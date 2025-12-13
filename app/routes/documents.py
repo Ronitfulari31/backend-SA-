@@ -1,15 +1,25 @@
-# app/routes/documents.py
+"""
+Documents Routes - Refactored for Multilingual Pipeline Integration
+Handles document upload with automated processing through all services
+"""
+
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from werkzeug.utils import secure_filename
 import os
-from app.models.document import Document
+import time
 import logging
-from rake_nltk import Rake
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.lsa import LsaSummarizer
+from bson import ObjectId
 
+# Import models
+from app.models.document import Document
+
+# Import all services
+from app.services.preprocessing import preprocessing_service
+from app.services.translation import translation_service
+from app.services.sentiment import sentiment_service
+from app.services.event_detection import event_detection_service
+from app.services.location_extraction import location_extraction_service
 
 logger = logging.getLogger(__name__)
 documents_bp = Blueprint('documents', __name__)
@@ -18,6 +28,7 @@ ALLOWED_EXTENSIONS = {'csv', 'txt', 'pdf', 'docx', 'json', 'md', 'rtf'}
 
 
 def extract_text(file_path, file_type):
+    """Extract text from various file formats"""
     text = ""
     try:
         if file_type == 'csv':
@@ -52,133 +63,537 @@ def extract_text(file_path, file_type):
     return text
 
 
+def process_document_pipeline(db, doc_id, raw_text):
+    """
+    Process document through the entire multilingual pipeline
+    
+    Pipeline stages:
+    1. Preprocessing (language detection, cleaning)
+    2. Translation (if non-English)
+    3. Sentiment Analysis
+    4. Event Detection
+    5. Location Extraction
+    """
+    try:
+        pipeline_start = time.time()
+        
+        # Stage 1: Preprocessing
+        logger.info(f"[{doc_id}] Stage 1: Preprocessing")
+        preprocess_result = preprocessing_service.preprocess(raw_text)
+        
+        Document.update_preprocessing(
+            db,
+            doc_id,
+            preprocess_result['clean_text'],
+            preprocess_result['language'],
+            preprocess_result['text_hash'],
+            0.0  # Time tracked internally by service
+        )
+        
+        logger.info(f"[{doc_id}] Language detected: {preprocess_result['language']}")
+        
+        # Stage 2: Translation
+        text_to_analyze = preprocess_result['clean_text']
+        
+        if preprocess_result['language'] != 'en' and preprocess_result['language'] != 'unknown':
+            logger.info(f"[{doc_id}] Stage 2: Translation ({preprocess_result['language']} → en)")
+            translation_result = translation_service.translate_to_english(
+                preprocess_result['clean_text'],
+                preprocess_result['language']
+            )
+            
+            if translation_result['success']:
+                Document.update_translation(
+                    db,
+                    doc_id,
+                    translation_result['translated_text'],
+                    translation_result['translation_engine'],
+                    translation_result['translation_time']
+                )
+                
+                # Use translated text for English-based analysis
+                text_to_analyze = translation_result['translated_text']
+                logger.info(f"[{doc_id}] Translation complete")
+        else:
+            logger.info(f"[{doc_id}] Stage 2: Skipping translation (already English)")
+        
+        # Stage 3: Sentiment Analysis
+        logger.info(f"[{doc_id}] Stage 3: Sentiment Analysis")
+        sentiment_result = sentiment_service.analyze(text_to_analyze, method='auto')
+        
+        Document.update_sentiment(
+            db,
+            doc_id,
+            sentiment_result['sentiment'],
+            sentiment_result['confidence'],
+            sentiment_result['method'],
+            sentiment_result.get('scores', {}),
+            sentiment_result['analysis_time']
+        )
+        
+        logger.info(f"[{doc_id}] Sentiment: {sentiment_result['sentiment']} ({sentiment_result['method']})")
+        
+        # Stage 4: Event Detection
+        logger.info(f"[{doc_id}] Stage 4: Event Detection")
+        event_result = event_detection_service.classify(text_to_analyze, method='hybrid')
+        
+        Document.update_event(
+            db,
+            doc_id,
+            event_result['event_type'],
+            event_result['confidence'],
+            event_result['classification_time']
+        )
+        
+        logger.info(f"[{doc_id}] Event: {event_result['event_type']}")
+        
+        # Stage 5: Location Extraction
+        logger.info(f"[{doc_id}] Stage 5: Location Extraction")
+        location_result = location_extraction_service.extract_locations(text_to_analyze)
+        
+        Document.update_locations(
+            db,
+            doc_id,
+            location_result['locations'],
+            location_result['extraction_time']
+        )
+        
+        logger.info(f"[{doc_id}] Locations extracted: {len(location_result['locations'])}")
+        
+        # Mark as processed
+        total_time = time.time() - pipeline_start
+        Document.mark_processed(db, doc_id, total_time)
+        
+        logger.info(f"[{doc_id}] ✓ Pipeline complete in {total_time:.2f}s")
+        
+        return {
+            'success': True,
+            'processing_time': total_time,
+            'language': preprocess_result['language'],
+            'sentiment': sentiment_result['sentiment'],
+            'event_type': event_result['event_type'],
+            'locations_count': len(location_result['locations'])
+        }
+        
+    except Exception as e:
+        logger.error(f"[{doc_id}] Pipeline error: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
 @documents_bp.route('/upload', methods=['POST'])
 @jwt_required()
 def upload_document():
-    """Upload a document (CSV, TXT, PDF, DOCX, JSON, Markdown, RTF)"""
+    """
+    Upload a document and process through multilingual pipeline
+    
+    Accepts:
+    - file: Document file (required)
+    - source: Data source (optional, default: 'file')
+    - location_hint: Location hint (optional)
+    - event_type_hint: Event type hint (optional)
+    """
     try:
         if current_app.db is None:
             return jsonify({
-                'error': 'Database not available',
-                'message': 'MongoDB connection failed'
+                'status': 'error',
+                'message': 'Database not available'
             }), 500
 
+        # Check for file
         if 'file' not in request.files:
             return jsonify({
-                'error': 'No file provided',
-                'message': 'Please upload a file'
+                'status': 'error',
+                'message': 'No file provided'
             }), 400
 
         file = request.files['file']
         if file.filename == '':
             return jsonify({
-                'error': 'No file selected',
-                'message': 'Please select a file'
+                'status': 'error',
+                'message': 'No file selected'
             }), 400
+
+        # Get metadata from form data
+        source = request.form.get('source', 'file')
+        location_hint = request.form.get('location_hint', None)
+        event_type_hint = request.form.get('event_type_hint', None)
 
         filename = secure_filename(file.filename)
         file_type = filename.split('.')[-1].lower()
 
         if file_type not in ALLOWED_EXTENSIONS:
             return jsonify({
-                'error': 'File type not allowed',
-                'message': f'Files of type .{file_type} are not supported for text extraction'
+                'status': 'error',
+                'message': f'File type .{file_type} not allowed'
             }), 400
 
+        # Save file
         upload_folder = current_app.config.get('UPLOAD_FOLDER', 'uploads')
         os.makedirs(upload_folder, exist_ok=True)
         file_path = os.path.join(upload_folder, filename)
         file.save(file_path)
 
-        # Get user ID securely from JWT
-        user_id = get_jwt_identity()  # Will be a string (ObjectId) from your JWT
+        # Extract text
+        raw_text = extract_text(file_path, file_type)
+        
+        if not raw_text or len(raw_text.strip()) == 0:
+            return jsonify({
+                'status': 'error',
+                'message': 'Could not extract text from file'
+            }), 400
 
-        # Extract text content for indexing/analysis
-        content = extract_text(file_path, file_type)
+        # Get user ID
+        user_id = get_jwt_identity()
 
+        # Create document with new schema
         doc_id = Document.create(
             current_app.db,
             user_id=user_id,
+            raw_text=raw_text,
             filename=filename,
             file_path=file_path,
             file_type=file_type,
-            content=content
+            source=source,
+            location_hint=location_hint,
+            event_type_hint=event_type_hint
         )
 
-        return jsonify({
-            'message': 'Document uploaded successfully',
-            'data': {
-                'document_id': doc_id,
-                'filename': filename,
-                'file_type': file_type
-            },
-            'status': 'success'
-        }), 201
+        logger.info(f"Document created: {doc_id}, starting pipeline...")
+
+        # Process through pipeline
+        pipeline_result = process_document_pipeline(current_app.db, doc_id, raw_text)
+
+        if pipeline_result['success']:
+            return jsonify({
+                'status': 'success',
+                'message': 'Document uploaded and processed successfully',
+                'data': {
+                    'document_id': doc_id,
+                    'filename': filename,
+                    'file_type': file_type,
+                    'processing_time': round(pipeline_result['processing_time'], 2),
+                    'analysis': {
+                        'language': pipeline_result['language'],
+                        'sentiment': pipeline_result['sentiment'],
+                        'event_type': pipeline_result['event_type'],
+                        'locations_found': pipeline_result['locations_count']
+                    }
+                }
+            }), 201
+        else:
+            return jsonify({
+                'status': 'partial',
+                'message': 'Document uploaded but processing failed',
+                'data': {
+                    'document_id': doc_id,
+                    'error': pipeline_result.get('error')
+                }
+            }), 201
 
     except Exception as e:
         logger.error(f"Upload error: {str(e)}")
         return jsonify({
-            'error': 'Upload failed',
-            'message': f'An error occurred during upload: {str(e)}'
+            'status': 'error',
+            'message': f'Upload failed: {str(e)}'
+        }), 500
+
+
+@documents_bp.route('/upload-text', methods=['POST'])
+@jwt_required()
+def upload_text():
+    """
+    Upload raw text directly (no file upload)
+    
+    Request body:
+    {
+        "text": "Raw text content",
+        "source": "twitter|news|file",
+        "location_hint": "Optional location",
+        "event_type_hint": "Optional event type"
+}
+    """
+    try:
+        if current_app.db is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Database not available'
+            }), 500
+
+        data = request.get_json()
+        
+        if not data or 'text' not in data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Text content required'
+            }), 400
+
+        raw_text = data['text']
+        source = data.get('source', 'api')
+        location_hint = data.get('location_hint', None)
+        event_type_hint = data.get('event_type_hint', None)
+
+        if not raw_text or len(raw_text.strip()) == 0:
+            return jsonify({
+                'status': 'error',
+                'message': 'Text cannot be empty'
+            }), 400
+
+        # Get user ID
+        user_id = get_jwt_identity()
+
+        # Create document
+        doc_id = Document.create(
+            current_app.db,
+            user_id=user_id,
+            raw_text=raw_text,
+            source=source,
+            location_hint=location_hint,
+            event_type_hint=event_type_hint
+        )
+
+        logger.info(f"Text document created: {doc_id}, starting pipeline...")
+
+        # Process through pipeline
+        pipeline_result = process_document_pipeline(current_app.db, doc_id, raw_text)
+
+        if pipeline_result['success']:
+            return jsonify({
+                'status': 'success',
+                'message': 'Text processed successfully',
+                'data': {
+                    'document_id': doc_id,
+                    'processing_time': round(pipeline_result['processing_time'], 2),
+                    'analysis': {
+                        'language': pipeline_result['language'],
+                        'sentiment': pipeline_result['sentiment'],
+                        'event_type': pipeline_result['event_type'],
+                        'locations_found': pipeline_result['locations_count']
+                    }
+                }
+            }), 201
+        else:
+            return jsonify({
+                'status': 'partial',
+                'message': 'Text uploaded but processing failed',
+                'data': {
+                    'document_id': doc_id,
+                    'error': pipeline_result.get('error')
+                }
+            }), 201
+
+    except Exception as e:
+        logger.error(f"Text upload error: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Upload failed: {str(e)}'
+        }), 500
+
+
+@documents_bp.route('/upload-batch', methods=['POST'])
+@jwt_required()
+def upload_batch():
+    """
+    Upload multiple text documents at once
+    
+    Request body:
+    {
+        "documents": [
+            {
+                "text": "Document 1 text",
+                "source": "twitter",
+                "location_hint": "Mumbai",
+                "event_type_hint": "flood"
+            },
+            ...
+        ]
+    }
+    """
+    try:
+        if current_app.db is None:
+            return jsonify({
+                'status': 'error',
+                'message': 'Database not available'
+            }), 500
+
+        data = request.get_json()
+        
+        if not data or 'documents' not in data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Documents array required'
+            }), 400
+
+        documents = data['documents']
+        
+        if not isinstance(documents, list) or len(documents) == 0:
+            return jsonify({
+                'status': 'error',
+                'message': 'Documents must be a non-empty array'
+            }), 400
+
+        user_id = get_jwt_identity()
+        results = []
+
+        for idx, doc_data in enumerate(documents):
+            try:
+                raw_text = doc_data.get('text', '')
+                
+                if not raw_text:
+                    results.append({
+                        'index': idx,
+                        'status': 'error',
+                        'message': 'Empty text'
+                    })
+                    continue
+
+                # Create document
+                doc_id = Document.create(
+                    current_app.db,
+                    user_id=user_id,
+                    raw_text=raw_text,
+                    source=doc_data.get('source', 'batch'),
+                    location_hint=doc_data.get('location_hint', None),
+                    event_type_hint=doc_data.get('event_type_hint', None)
+                )
+
+                # Process pipeline
+                pipeline_result = process_document_pipeline(current_app.db, doc_id, raw_text)
+
+                if pipeline_result['success']:
+                    results.append({
+                        'index': idx,
+                        'status': 'success',
+                        'document_id': doc_id,
+                        'language': pipeline_result['language'],
+                        'sentiment': pipeline_result['sentiment'],
+                        'event_type': pipeline_result['event_type']
+                    })
+                else:
+                    results.append({
+                        'index': idx,
+                        'status': 'partial',
+                        'document_id': doc_id,
+                        'error': pipeline_result.get('error')
+                    })
+
+            except Exception as e:
+                results.append({
+                    'index': idx,
+                    'status': 'error',
+                    'message': str(e)
+                })
+
+        success_count = sum(1 for r in results if r['status'] == 'success')
+
+        return jsonify({
+            'status': 'success',
+            'message': f'Batch upload complete: {success_count}/{len(documents)} successful',
+            'data': {
+                'total': len(documents),
+                'successful': success_count,
+                'results': results
+            }
+        }), 201
+
+    except Exception as e:
+        logger.error(f"Batch upload error: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': f'Batch upload failed: {str(e)}'
         }), 500
 
 
 @documents_bp.route('/list', methods=['GET'])
 @jwt_required()
 def list_documents():
-    """List all documents for the logged-in user"""
+    """
+    List all documents for the logged-in user with filters
+    
+    Query params:
+    - event_type: Filter by event type
+    - sentiment: Filter by sentiment (positive, negative, neutral)
+    - language: Filter by language
+    - source: Filter by source
+    - limit: Number of results (default: 100)
+    """
     try:
         if current_app.db is None:
             return jsonify({
-                'error': 'Database not available',
-                'message': 'MongoDB connection failed'
+                'status': 'error',
+                'message': 'Database not available'
             }), 500
 
         user_id = get_jwt_identity()
 
-        # Get all documents for the user
-        documents = current_app.db.documents.find({'user_id': user_id}).sort('uploaded_at', -1)
+        # Get filters from query params
+        event_type = request.args.get('event_type', None)
+        sentiment = request.args.get('sentiment', None)
+        language = request.args.get('language', None)
+        source = request.args.get('source', None)
+        limit = int(request.args.get('limit', 100))
+
+        # Get documents with filters
+        documents = Document.get_by_filters(
+            current_app.db,
+            user_id=user_id,
+            event_type=event_type,
+            sentiment=sentiment,
+            language=language,
+            source=source,
+            limit=limit
+        )
 
         docs_list = []
         for doc in documents:
             docs_list.append({
                 'document_id': str(doc['_id']),
-                'filename': doc['filename'],
-                'file_type': doc['file_type'],
-                'uploaded_at': str(doc.get('uploaded_at', '')),
+                'filename': doc.get('filename', 'N/A'),
+                'source': doc.get('source', 'unknown'),
+                'language': doc.get('language', 'unknown'),
+                'sentiment': doc.get('sentiment', {}).get('label', 'unknown'),
+                'event_type': doc.get('event_type', 'unknown'),
+                'locations': len(doc.get('locations', [])),
+                'timestamp': str(doc.get('timestamp', '')),
                 'processed': doc.get('processed', False),
-                'content_preview': doc.get('content', '')[:200] + '...' if doc.get('content') else 'No content'
+                'text_preview': doc.get('clean_text','')[:150] + '...' if doc.get('clean_text') else doc.get('raw_text', '')[:150] + '...'
             })
 
         return jsonify({
+            'status': 'success',
             'message': 'Documents retrieved successfully',
             'data': {
                 'documents': docs_list,
-                'total': len(docs_list)
-            },
-            'status': 'success'
+                'total': len(docs_list),
+                'filters_applied': {
+                    'event_type': event_type,
+                    'sentiment': sentiment,
+                    'language': language,
+                    'source': source
+                }
+            }
         }), 200
 
     except Exception as e:
         logger.error(f"List documents error: {str(e)}")
         return jsonify({
-            'error': 'Failed to retrieve documents',
-            'message': f'An error occurred: {str(e)}'
+            'status': 'error',
+            'message': f'Failed to retrieve documents: {str(e)}'
         }), 500
 
 
 @documents_bp.route('/<doc_id>', methods=['GET'])
 @jwt_required()
 def get_document(doc_id):
-    """Get a single document with its content"""
+    """Get full document details with all analysis results"""
     try:
         if current_app.db is None:
             return jsonify({
-                'error': 'Database not available',
-                'message': 'MongoDB connection failed'
+                'status': 'error',
+                'message': 'Database not available'
             }), 500
-
-        from bson import ObjectId
 
         user_id = get_jwt_identity()
 
@@ -190,31 +605,37 @@ def get_document(doc_id):
 
         if not document:
             return jsonify({
-                'error': 'Document not found',
-                'message': 'The requested document does not exist or you do not have access'
+                'status': 'error',
+                'message': 'Document not found'
             }), 404
 
         return jsonify({
+            'status': 'success',
             'message': 'Document retrieved successfully',
             'data': {
-                'document': {
-                    'document_id': str(document['_id']),
-                    'filename': document['filename'],
-                    'file_type': document['file_type'],
-                    'uploaded_at': str(document.get('uploaded_at', '')),
-                    'processed': document.get('processed', False),
-                    'content': document.get('content', ''),
-                    'file_path': document.get('file_path', '')
-                }
-            },
-            'status': 'success'
+                'document_id': str(document['_id']),
+                'filename': document.get('filename', 'N/A'),
+                'source': document.get('source', 'unknown'),
+                'timestamp': str(document.get('timestamp', '')),
+                'raw_text': document.get('raw_text', ''),
+                'clean_text': document.get('clean_text', ''),
+                'language': document.get('language', 'unknown'),
+                'translated_text': document.get('translated_text', None),
+                'sentiment': document.get('sentiment', {}),
+                'event_type': document.get('event_type', 'unknown'),
+                'event_confidence': document.get('event_confidence', 0.0),
+                'locations': document.get('locations', []),
+                'processing_time': document.get('processing_time', 0.0),
+                'pipeline_metrics': document.get('pipeline_metrics', {}),
+                'processed': document.get('processed', False)
+            }
         }), 200
 
     except Exception as e:
         logger.error(f"Get document error: {str(e)}")
         return jsonify({
-            'error': 'Failed to retrieve document',
-            'message': f'An error occurred: {str(e)}'
+            'status': 'error',
+            'message': f'Failed to retrieve document: {str(e)}'
         }), 500
 
 
@@ -225,12 +646,9 @@ def delete_document(doc_id):
     try:
         if current_app.db is None:
             return jsonify({
-                'error': 'Database not available',
-                'message': 'MongoDB connection failed'
+                'status': 'error',
+                'message': 'Database not available'
             }), 500
-
-        from bson import ObjectId
-        import os
 
         user_id = get_jwt_identity()
 
@@ -242,14 +660,15 @@ def delete_document(doc_id):
 
         if not document:
             return jsonify({
-                'error': 'Document not found',
-                'message': 'The requested document does not exist or you do not have access'
+                'status': 'error',
+                'message': 'Document not found'
             }), 404
 
-        # Delete the file from disk
+        # Delete file if exists
         try:
-            if os.path.exists(document['file_path']):
-                os.remove(document['file_path'])
+            file_path = document.get('file_path')
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
         except Exception as e:
             logger.warning(f"Could not delete file: {e}")
 
@@ -257,200 +676,16 @@ def delete_document(doc_id):
         current_app.db.documents.delete_one({'_id': ObjectId(doc_id)})
 
         return jsonify({
+            'status': 'success',
             'message': 'Document deleted successfully',
             'data': {
                 'document_id': doc_id
-            },
-            'status': 'success'
+            }
         }), 200
 
     except Exception as e:
         logger.error(f"Delete document error: {str(e)}")
         return jsonify({
-            'error': 'Failed to delete document',
-            'message': f'An error occurred: {str(e)}'
-        }), 500
-
-
-@documents_bp.route('/<doc_id>/sentiment', methods=['GET'])
-@jwt_required()
-def analyze_sentiment(doc_id):
-    """Analyze sentiment of a document's content"""
-    try:
-        if current_app.db is None:
-            return jsonify({
-                'error': 'Database not available',
-                'message': 'MongoDB connection failed'
-            }), 500
-
-        from bson import ObjectId
-        from textblob import TextBlob
-
-        user_id = get_jwt_identity()
-
-        # Find the document
-        document = current_app.db.documents.find_one({
-            '_id': ObjectId(doc_id),
-            'user_id': user_id
-        })
-
-        if not document:
-            return jsonify({
-                'error': 'Document not found',
-                'message': 'The requested document does not exist or you do not have access'
-            }), 404
-
-        content = document.get('content', '')
-        if not content:
-            return jsonify({
-                'error': 'No content',
-                'message': 'Document has no text to analyze'
-            }), 400
-
-        # Analyze sentiment
-        blob = TextBlob(content)
-        polarity = blob.sentiment.polarity
-        if polarity > 0:
-            sentiment = 'positive'
-        elif polarity < 0:
-            sentiment = 'negative'
-        else:
-            sentiment = 'neutral'
-
-        return jsonify({
-            'message': 'Sentiment analysis completed',
-            'data': {
-                'document_id': doc_id,
-                'sentiment': sentiment,
-                'polarity': polarity,
-                'content_preview': content[:200] + '...'
-            },
-            'status': 'success'
-        }), 200
-
-    
-
-    except Exception as e:
-        logger.error(f"Sentiment analysis error: {str(e)}")
-        return jsonify({
-            'error': 'Sentiment analysis failed',
-            'message': f'An error occurred: {str(e)}'
-        }), 500
-
-
-@documents_bp.route('/<doc_id>/keywords', methods=['GET'])
-@jwt_required()
-def extract_keywords(doc_id):
-    """Extract keywords from a document's content"""
-    try:
-        if current_app.db is None:
-            return jsonify({
-                'error': 'Database not available',
-                'message': 'MongoDB connection failed'
-            }), 500
-
-        from bson import ObjectId
-
-        user_id = get_jwt_identity()
-
-        # Find the document
-        document = current_app.db.documents.find_one({
-            '_id': ObjectId(doc_id),
-            'user_id': user_id
-        })
-
-        if not document:
-            return jsonify({
-                'error': 'Document not found',
-                'message': 'The requested document does not exist or you do not have access'
-            }), 404
-
-        content = document.get('content', '')
-        if not content:
-            return jsonify({
-                'error': 'No content',
-                'message': 'Document has no text to analyze'
-            }), 400
-
-        # Extract keywords
-        r = Rake()
-        r.extract_keywords_from_text(content)
-        keywords = r.get_ranked_phrases()
-
-        return jsonify({
-            'message': 'Keywords extracted successfully',
-            'data': {
-                'document_id': doc_id,
-                'keywords': keywords[:10],  # Top 10 keywords
-                'content_preview': content[:200] + '...'
-            },
-            'status': 'success'
-        }), 200
-
-    except Exception as e:
-        logger.error(f"Keyword extraction error: {str(e)}")
-        return jsonify({
-            'error': 'Keyword extraction failed',
-            'message': f'An error occurred: {str(e)}'
-        }), 500
-
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.lsa import LsaSummarizer
-
-@documents_bp.route('/<doc_id>/summarize', methods=['GET'])
-@jwt_required()
-def summarize_document(doc_id):
-    """Summarize a document's content"""
-    try:
-        if current_app.db is None:
-            return jsonify({
-                'error': 'Database not available',
-                'message': 'MongoDB connection failed'
-            }), 500
-
-        from bson import ObjectId
-
-        user_id = get_jwt_identity()
-
-        # Find the document
-        document = current_app.db.documents.find_one({
-            '_id': ObjectId(doc_id),
-            'user_id': user_id
-        })
-
-        if not document:
-            return jsonify({
-                'error': 'Document not found',
-                'message': 'The requested document does not exist or you do not have access'
-            }), 404
-
-        content = document.get('content', '')
-        if not content:
-            return jsonify({
-                'error': 'No content',
-                'message': 'Document has no text to analyze'
-            }), 400
-
-        # Summarize
-        parser = PlaintextParser.from_string(content, Tokenizer("english"))
-        summarizer = LsaSummarizer()
-        summary_sentences = summarizer(parser.document, sentences_count=3)
-        summary = " ".join([str(sentence) for sentence in summary_sentences])
-
-        return jsonify({
-            'message': 'Document summarized successfully',
-            'data': {
-                'document_id': doc_id,
-                'summary': summary,
-                'content_preview': content[:200] + '...'
-            },
-            'status': 'success'
-        }), 200
-
-    except Exception as e:
-        logger.error(f"Summarization error: {str(e)}")
-        return jsonify({
-            'error': 'Summarization failed',
-            'message': f'An error occurred: {str(e)}'
+            'status': 'error',
+            'message': f'Failed to delete document: {str(e)}'
         }), 500

@@ -1,3 +1,6 @@
+# Working Requirements for Python 3.11 (Windows Compatible)
+# Excludes packages that require C++ compilation
+
 # ============================================
 # Flask Web Framework & Extensions
 # ============================================
@@ -35,7 +38,7 @@ requests==2.32.5
 # ============================================
 # Natural Language Processing (NLP) Core
 # ============================================
-nltk==3.8.1
+nltk>=3.9
 
 # ============================================
 # Sentiment Analysis
@@ -60,21 +63,30 @@ sumy==0.11.0
 deep-translator==1.11.4
 
 # ============================================
-# Named Entity Recognition (NER)
+# Language Detection
 # ============================================
-spacy==3.7.2
-
-# ============================================
-# Machine Learning & Classification
-# ============================================
-scikit-learn==1.3.2
-numpy>=1.24.0
-scipy>=1.11.0
+langdetect==1.0.9
 
 # ============================================
 # Additional Dependencies
 # ============================================
-# Note: These are dependencies of the above packages
-# but explicitly listed for clarity
 python-socketio==5.10.0
 eventlet==0.33.3
+
+# ============================================
+# Machine Learning (try to install separately)
+# ============================================
+# scikit-learn - Install with: pip install scikit-learn
+# numpy - Will be installed with pandas
+# scipy - Will be installed with scikit-learn
+
+# ============================================
+# NER - spaCy (install separately)
+# ============================================
+# pip install spacy
+# python -m spacy download en_core_web_sm
+
+# ============================================
+# Transformers (optional, very large)
+# ============================================
+# pip install transformers torch sentencepiece
