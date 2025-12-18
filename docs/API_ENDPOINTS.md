@@ -72,17 +72,6 @@ curl http://localhost:5000/api/nlp-features
 curl http://localhost:5000/api/dashboard/stats
 ```
 
----
-
-## Most Common Mistake
-
-❌ **Wrong**: `http://localhost:5000/api/health`
-✅ **Correct**: `http://localhost:5000/health`
-
-The `/health` endpoint is at the root level, not under `/api`!
-
----
-
 ## Testing the Upload Pipeline
 
 To test the full multilingual pipeline:

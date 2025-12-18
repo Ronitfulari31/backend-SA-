@@ -74,7 +74,7 @@ class EvaluationService:
     
     def check_cross_lingual_consistency(self, document_ids: Optional[List[str]] = None, limit: int = 100) -> Dict:
         """
-        CHECK CROSS-LINGUAL CONSISTENCY ⭐⭐⭐
+        CHECK CROSS-LINGUAL CONSISTENCY 
         This is the RESEARCH NOVELTY!
         
         Compare sentiment of original text vs translated text

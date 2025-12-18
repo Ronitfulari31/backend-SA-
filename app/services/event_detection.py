@@ -24,7 +24,7 @@ class EventDetectionService:
                 'flood', 'flooding', 'flooded', 'water', 'rain', 'rainfall', 'heavy rain',
                 'monsoon', 'overflow', 'river', 'dam', 'inundation', 'waterlogging',
                 'submerged', 'drowned', 'drowning', 'rescue', 'evacuation', 'shelter',
-                'बाढ़', 'पानी', 'बारिश'  # Hindi keywords
+                'बाढ़', 'पानी', 'बारिश'
             ],
             'fire': [
                 'fire', 'burning', 'burnt', 'flame', 'smoke', 'blaze', 'wildfire',
@@ -34,12 +34,12 @@ class EventDetectionService:
             'earthquake': [
                 'earthquake', 'quake', 'tremor', 'seismic', 'magnitude', 'richter',
                 'epicenter', 'aftershock', 'tsunami', 'shaking', 'ground', 'collapse',
-                'building collapse', 'rubble', 'भूकंप'  # Hindi
+                'building collapse', 'rubble', 'भूकंप'  
             ],
             'landslide': [
                 'landslide', 'mudslide', 'avalanche', 'debris', 'slope', 'hill',
                 'mountain', 'rock fall', 'soil', 'erosion', 'collapse', 'buried',
-                'भूस्खलन'  # Hindi
+                'भूस्खलन'  #
             ],
             'terror_attack': [
                 'attack', 'terror', 'terrorist', 'bombing', 'blast', 'shooting',
