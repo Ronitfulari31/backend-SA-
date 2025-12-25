@@ -13,8 +13,11 @@ class Config:
     
     # MongoDB
     MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
-    MONGODB_DB_NAME = os.getenv('MONGODB_DB_NAME', 'legal_sentiment_db')
+    MONGODB_DB_NAME = 'news_sentiment_intelligence_db'  # Permanent fix until env var is unset
     
+    # 🔑 News API
+    NEWSAPI_KEY = os.getenv('NEWSAPI_KEY')
+
     # CORS
     CORS_ORIGINS = [
         "http://localhost:4200",

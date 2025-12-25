@@ -14,12 +14,8 @@ from bson import ObjectId
 # Import models
 from app.models.document import Document
 
-# Import all services
-from app.services.preprocessing import preprocessing_service
-from app.services.translation import translation_service
-from app.services.sentiment import sentiment_service
-from app.services.event_detection import event_detection_service
 from app.services.location_extraction import location_extraction_service
+from app.services.pipeline import process_document_pipeline
 
 logger = logging.getLogger(__name__)
 documents_bp = Blueprint('documents', __name__)
@@ -63,124 +59,7 @@ def extract_text(file_path, file_type):
     return text
 
 
-def process_document_pipeline(db, doc_id, raw_text):
-    """
-    Process document through the entire multilingual pipeline
-    
-    Pipeline stages:
-    1. Preprocessing (language detection, cleaning)
-    2. Translation (if non-English)
-    3. Sentiment Analysis
-    4. Event Detection
-    5. Location Extraction
-    """
-    try:
-        pipeline_start = time.time()
-        
-        # Stage 1: Preprocessing
-        logger.info(f"[{doc_id}] Stage 1: Preprocessing")
-        preprocess_result = preprocessing_service.preprocess(raw_text)
-        
-        Document.update_preprocessing(
-            db,
-            doc_id,
-            preprocess_result['clean_text'],
-            preprocess_result['language'],
-            preprocess_result['text_hash'],
-            0.0  # Time tracked internally by service
-        )
-        
-        logger.info(f"[{doc_id}] Language detected: {preprocess_result['language']}")
-        
-        # Stage 2: Translation
-        text_to_analyze = preprocess_result['clean_text']
-        
-        if preprocess_result['language'] != 'en' and preprocess_result['language'] != 'unknown':
-            logger.info(f"[{doc_id}] Stage 2: Translation ({preprocess_result['language']} → en)")
-            translation_result = translation_service.translate_to_english(
-                preprocess_result['clean_text'],
-                preprocess_result['language']
-            )
-            
-            if translation_result['success']:
-                Document.update_translation(
-                    db,
-                    doc_id,
-                    translation_result['translated_text'],
-                    translation_result['translation_engine'],
-                    translation_result['translation_time']
-                )
-                
-                # Use translated text for English-based analysis
-                text_to_analyze = translation_result['translated_text']
-                logger.info(f"[{doc_id}] Translation complete")
-        else:
-            logger.info(f"[{doc_id}] Stage 2: Skipping translation (already English)")
-        
-        # Stage 3: Sentiment Analysis
-        logger.info(f"[{doc_id}] Stage 3: Sentiment Analysis")
-        sentiment_result = sentiment_service.analyze(text_to_analyze, method='auto')
-        
-        Document.update_sentiment(
-            db,
-            doc_id,
-            sentiment_result['sentiment'],
-            sentiment_result['confidence'],
-            sentiment_result['method'],
-            sentiment_result.get('scores', {}),
-            sentiment_result['analysis_time']
-        )
-        
-        logger.info(f"[{doc_id}] Sentiment: {sentiment_result['sentiment']} ({sentiment_result['method']})")
-        
-        # Stage 4: Event Detection
-        logger.info(f"[{doc_id}] Stage 4: Event Detection")
-        event_result = event_detection_service.classify(text_to_analyze, method='hybrid')
-        
-        Document.update_event(
-            db,
-            doc_id,
-            event_result['event_type'],
-            event_result['confidence'],
-            event_result['classification_time']
-        )
-        
-        logger.info(f"[{doc_id}] Event: {event_result['event_type']}")
-        
-        # Stage 5: Location Extraction
-        logger.info(f"[{doc_id}] Stage 5: Location Extraction")
-        location_result = location_extraction_service.extract_locations(text_to_analyze)
-        
-        Document.update_locations(
-            db,
-            doc_id,
-            location_result['locations'],
-            location_result['extraction_time']
-        )
-        
-        logger.info(f"[{doc_id}] Locations extracted: {len(location_result['locations'])}")
-        
-        # Mark as processed
-        total_time = time.time() - pipeline_start
-        Document.mark_processed(db, doc_id, total_time)
-        
-        logger.info(f"[{doc_id}] ✓ Pipeline complete in {total_time:.2f}s")
-        
-        return {
-            'success': True,
-            'processing_time': total_time,
-            'language': preprocess_result['language'],
-            'sentiment': sentiment_result['sentiment'],
-            'event_type': event_result['event_type'],
-            'locations_count': len(location_result['locations'])
-        }
-        
-    except Exception as e:
-        logger.error(f"[{doc_id}] Pipeline error: {e}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+
 
 
 @documents_bp.route('/upload', methods=['POST'])

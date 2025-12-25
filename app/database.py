@@ -14,18 +14,18 @@ def init_db(app):
     """
     global db, client
     try:
-        # Load URI from Flask config or fallback to default local DB
+        # Load URI from Flask config or fallback to default local DB (without db name)
         mongodb_uri = app.config.get(
             'MONGODB_URI',
-            'mongodb://localhost:27017/legal_sentiment_db'
+            'mongodb://localhost:27017/'  # Removed db name from default
         )
 
         # Establish connection with timeout
         client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
         client.admin.command('ping')  # Test connection
 
-        # Extract database name from URI (last part after '/')
-        db_name = mongodb_uri.split('/')[-1] or 'legalbot'
+        # Explicitly select database from config
+        db_name = app.config["MONGODB_DB_NAME"]
         db = client[db_name]
         app.db = db
         app.mongo_client = client

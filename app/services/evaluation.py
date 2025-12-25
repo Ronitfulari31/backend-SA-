@@ -118,7 +118,7 @@ class EvaluationService:
                 }
             
             # Import services for re-analysis
-            from app.services.sentiment import sentiment_service
+            from app.services.sentiment import get_sentiment_service
             
             consistent_count = 0
             inconsistent_docs = []
@@ -266,7 +266,7 @@ class EvaluationService:
             Comparison of BERTweet, VADER, and TextBlob
         """
         try:
-            from app.services.sentiment import sentiment_service
+            from app.services.sentiment import get_sentiment_service
             
             results = {
                 'bertweet': {'times': [], 'sentiments': []},

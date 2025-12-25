@@ -1,236 +1,240 @@
 """
 Location Extraction Service
-Extracts locations (city, state, country) from text using spaCy NER
+Level-1: Extract location mentions using spaCy
+Level-2: Enrich and normalize into city/state/country using geocoder
+(English-normalized, language-agnostic)
 """
 
 import logging
 import time
 from typing import Dict, List
+from functools import lru_cache
+
 import spacy
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
 
 class LocationExtractionService:
-    """Service for location extraction from text"""
-    
+    """Service for hierarchical location extraction"""
+
     def __init__(self):
         self.nlp = None
         self._load_spacy_model()
-    
+
+        # ✅ FIX: Nominatim does NOT accept `language` in constructor
+        self.geolocator = Nominatim(
+            user_agent="news_location_enrichment"
+        )
+
+        self.geocode = RateLimiter(
+            self.geolocator.geocode,
+            min_delay_seconds=1,
+            swallow_exceptions=True
+        )
+
+    # -------------------------------------------------
+    # spaCy
+    # -------------------------------------------------
+
     def _load_spacy_model(self):
-        """Load spaCy model for NER"""
         try:
             logger.info("Loading spaCy model...")
             self.nlp = spacy.load("en_core_web_sm")
             logger.info("✓ spaCy model loaded successfully")
-            
         except Exception as e:
             logger.error(f"Failed to load spaCy model: {e}")
             logger.info("Run: python -m spacy download en_core_web_sm")
-    
+
     def extract_entities(self, text: str) -> List[Dict]:
-        """
-        Extract all named entities from text
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            List of entities with text and label
-        """
         if self.nlp is None:
             logger.error("spaCy model not loaded")
             return []
-        
+
         try:
             doc = self.nlp(text)
-            entities = [
+            return [
                 {
-                    'text': ent.text,
-                    'label': ent.label_,
-                    'start': ent.start_char,
-                    'end': ent.end_char
+                    "text": ent.text,
+                    "label": ent.label_,
+                    "start": ent.start_char,
+                    "end": ent.end_char
                 }
                 for ent in doc.ents
             ]
-            
-            return entities
-            
         except Exception as e:
             logger.error(f"Entity extraction failed: {e}")
             return []
-    
+
+    # -------------------------------------------------
+    # LEVEL-1 → LEVEL-2 PIPELINE
+    # -------------------------------------------------
+
     def extract_locations(self, text: str) -> Dict:
-        """
-        Extract location information from text
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            Dictionary with:
-                - locations: List of structured location dictionaries
-                - extraction_time: Time taken
-        """
         start_time = time.time()
-        
+
         try:
-            if not text or len(text.strip()) == 0:
-                return {
-                    'locations': [],
-                    'extraction_time': 0.0
-                }
-            
-            if self.nlp is None:
-                logger.error("spaCy model not available")
-                return {
-                    'locations': [],
-                    'extraction_time': 0.0,
-                    'error': 'spaCy model not loaded'
-                }
-            
-            # Extract all entities
+            if not text or not text.strip() or self.nlp is None:
+                return {"location": None, "extraction_time": 0.0}
+
             doc = self.nlp(text)
-            
-            # Filter for location entities (GPE = Geo-Political Entity, LOC = Location)
-            location_entities = []
-            
+
+            # -------- LEVEL-1: RAW DETECTION --------
+            raw_locations = []
+            seen = set()
+
             for ent in doc.ents:
-                if ent.label_ in ['GPE', 'LOC']:
-                    location_entities.append({
-                        'entity_text': ent.text,
-                        'entity_type': ent.label_,
-                        'location_type': self._classify_location_type(ent.text)
-                    })
-            
-            # Structure locations
-            structured_locations = self._structure_locations(location_entities)
-            
-            extraction_time = time.time() - start_time
-            
-            logger.info(f"Extracted {len(structured_locations)} locations in {extraction_time:.3f}s")
-            
+                if ent.label_ not in {"GPE", "LOC"}:
+                    continue
+
+                value = ent.text.strip()
+                key = value.lower()
+
+                if key in seen:
+                    continue
+
+                seen.add(key)
+                raw_locations.append({
+                    "entity_text": value,
+                    "location_type": self._classify_location_type(value)
+                })
+
+            # -------- LEVEL-2: ENRICHMENT --------
+            enriched = self._enrich_locations(raw_locations)
+
+            extraction_time = round(time.time() - start_time, 3)
+
+            logger.info(
+                f"Location extraction completed | "
+                f"Level-1={len(raw_locations)} | "
+                f"Enriched={'yes' if enriched else 'no'} | "
+                f"time={extraction_time}s"
+            )
+
             return {
-                'locations': structured_locations,
-                'extraction_time': round(extraction_time, 3)
+                "location": enriched,
+                "extraction_time": extraction_time
             }
-            
+
         except Exception as e:
-            extraction_time = time.time() - start_time
             logger.error(f"Location extraction failed: {e}")
-            
             return {
-                'locations': [],
-                'extraction_time': round(extraction_time, 3),
-                'error': str(e)
+                "location": None,
+                "extraction_time": round(time.time() - start_time, 3),
+                "error": str(e)
             }
-    
+
+    # -------------------------------------------------
+    # HELPERS
+    # -------------------------------------------------
+
     def _classify_location_type(self, location_text: str) -> str:
-        """
-        Classify location as city, state, or country (simple heuristic)
-        
-        Args:
-            location_text: Location name
-            
-        Returns:
-            'city', 'state', 'country', or 'unknown'
-        """
-        # Common country names (simplified)
+        value = location_text.lower()
+
         countries = {
-            'india', 'usa', 'united states', 'china', 'japan', 'uk', 'united kingdom',
-            'france', 'germany', 'spain', 'italy', 'russia', 'brazil', 'mexico',
-            'australia', 'canada', 'pakistan', 'bangladesh', 'nepal', 'sri lanka'
+            "india", "usa", "united states", "china", "japan", "uk",
+            "united kingdom", "france", "germany", "spain", "italy",
+            "russia", "brazil", "mexico", "australia", "canada"
         }
-        
-        # Common Indian states (for disaster context)
+
         indian_states = {
-            'maharashtra', 'karnataka', 'tamil nadu', 'kerala', 'gujarat', 
-            'rajasthan', 'punjab', 'haryana', 'uttar pradesh', 'bihar',
-            'west bengal', 'odisha', 'assam', 'uttarakhand', 'himachal pradesh'
+            "maharashtra", "karnataka", "tamil nadu", "kerala",
+            "gujarat", "rajasthan", "punjab", "haryana",
+            "uttar pradesh", "bihar", "west bengal", "odisha"
         }
-        
-        location_lower = location_text.lower()
-        
-        if location_lower in countries:
-            return 'country'
-        elif location_lower in indian_states:
-            return 'state'
-        else:
-            # Default to city for GPE entities
-            return 'city'
-    
-    def _structure_locations(self, location_entities: List[Dict]) -> List[Dict]:
+
+        if value in countries:
+            return "country"
+        if value in indian_states:
+            return "state"
+        return "city"
+
+    @lru_cache(maxsize=512)
+    def _cached_geocode(self, place: str):
+        # ✅ FIX: Force English at REQUEST LEVEL (supported by geopy)
+        return self.geocode(
+            place,
+            addressdetails=True,
+            language="en",
+            timeout=5
+        )
+
+    # -------------------------------------------------
+    # LEVEL-2 ENRICHMENT
+    # -------------------------------------------------
+
+    def _enrich_locations(self, locations: List[Dict]) -> Dict | None:
         """
-        Structure location entities into city/state/country format
-        
-        Args:
-            location_entities: List of location entities
-            
-        Returns:
-            List of structured location dictionaries
+        Resolve detected locations into a primary city/state/country
+        (Always English, never null)
         """
-        structured = []
-        
-        for entity in location_entities:
-            loc = {
-                'entity_text': entity['entity_text'],
-                'location_type': entity['location_type']
-            }
-            
-            # Add to appropriate field
-            if entity['location_type'] == 'city':
-                loc['city'] = entity['entity_text']
-                loc['state'] = None
-                loc['country'] = None
-            elif entity['location_type'] == 'state':
-                loc['city'] = None
-                loc['state'] = entity['entity_text']
-                loc['country'] = None
-            elif entity['location_type'] == 'country':
-                loc['city'] = None
-                loc['state'] = None
-                loc['country'] = entity['entity_text']
-            else:
-                # Default to city
-                loc['city'] = entity['entity_text']
-                loc['state'] = None
-                loc['country'] = None
-            
-            structured.append(loc)
-        
-        return structured
-    
+
+        # Prefer city-level first
+        sorted_locations = sorted(
+            locations,
+            key=lambda x: 0 if x["location_type"] == "city" else 1
+        )
+
+        for loc in sorted_locations:
+            try:
+                geo = self._cached_geocode(loc["entity_text"])
+                if not geo or not geo.raw:
+                    continue
+
+                address = geo.raw.get("address", {})
+
+                city = (
+                    address.get("city")
+                    or address.get("town")
+                    or address.get("village")
+                )
+
+                state = address.get("state")
+                country = address.get("country")
+
+                if not country:
+                    continue
+
+                return {
+                    "city": city or "Unknown",
+                    "state": state or "Unknown",
+                    "country": country or "Unknown",
+                    "confidence": 0.9
+                }
+
+            except Exception as e:
+                logger.warning(
+                    f"Geocoding failed for {loc['entity_text']}: {e}"
+                )
+
+        return None
+
+    # -------------------------------------------------
+    # SUMMARY
+    # -------------------------------------------------
+
     def get_location_summary(self, locations: List[Dict]) -> Dict:
-        """
-        Get summary of extracted locations
-        
-        Args:
-            locations: List of location dictionaries
-            
-        Returns:
-            Summary with counts by type
-        """
         summary = {
-            'total_locations': len(locations),
-            'cities': [],
-            'states': [],
-            'countries': []
+            "total_locations": len(locations),
+            "cities": [],
+            "states": [],
+            "countries": []
         }
-        
+
         for loc in locations:
-            if loc.get('city'):
-                summary['cities'].append(loc['city'])
-            if loc.get('state'):
-                summary['states'].append(loc['state'])
-            if loc.get('country'):
-                summary['countries'].append(loc['country'])
-        
-        # Remove duplicates
-        summary['cities'] = list(set(summary['cities']))
-        summary['states'] = list(set(summary['states']))
-        summary['countries'] = list(set(summary['countries']))
-        
+            if loc.get("city"):
+                summary["cities"].append(loc["city"])
+            if loc.get("state"):
+                summary["states"].append(loc["state"])
+            if loc.get("country"):
+                summary["countries"].append(loc["country"])
+
+        summary["cities"] = list(set(summary["cities"]))
+        summary["states"] = list(set(summary["states"]))
+        summary["countries"] = list(set(summary["countries"]))
+
         return summary
 
 

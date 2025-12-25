@@ -1,5 +1,5 @@
 # Working Requirements for Python 3.11 (Windows Compatible)
-# Excludes packages that require C++ compilation
+# Updated to include all listed libraries, algorithms, and ML models
 
 # ============================================
 # Flask Web Framework & Extensions
@@ -36,9 +36,19 @@ striprtf==0.0.26
 requests==2.32.5
 
 # ============================================
+# Web Content Extraction
+# ============================================
+trafilatura
+newspaper3k
+beautifulsoup4
+
+# ============================================
 # Natural Language Processing (NLP) Core
 # ============================================
 nltk>=3.9
+spacy
+transformers
+torch
 
 # ============================================
 # Sentiment Analysis
@@ -61,11 +71,17 @@ sumy==0.11.0
 # Translation Services
 # ============================================
 deep-translator==1.11.4
+googletrans
 
 # ============================================
 # Language Detection
 # ============================================
 langdetect==1.0.9
+
+# ============================================
+# Password Hashing
+# ============================================
+bcrypt
 
 # ============================================
 # Additional Dependencies
@@ -74,19 +90,15 @@ python-socketio==5.10.0
 eventlet==0.33.3
 
 # ============================================
-# Machine Learning (try to install separately)
+# Machine Learning
 # ============================================
-# scikit-learn - Install with: pip install scikit-learn
-# numpy - Will be installed with pandas
-# scipy - Will be installed with scikit-learn
+scikit-learn
+numpy
+scipy
 
 # ============================================
-# NER - spaCy (install separately)
+# Notes
 # ============================================
-# pip install spacy
-# python -m spacy download en_core_web_sm
-
-# ============================================
-# Transformers (optional, very large)
-# ============================================
-# pip install transformers torch sentencepiece
+# Install spaCy model: python -m spacy download en_core_web_sm
+# Algorithms: LSA, Luhn, RAKE, YAKE, Rule-Based Matching, Hybrid Keyword + ML Classifier, Zero-Shot Classification, SHA256 Hashing, Regex Cleaning, Weighted Scoring
+# ML Models: BERTweet, en_core_web_sm, facebook/bart-large-mnli, Custom ML Classifier

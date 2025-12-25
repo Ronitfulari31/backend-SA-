@@ -17,7 +17,7 @@ evaluation_bp = Blueprint('evaluation', __name__)
 @jwt_required()
 def check_cross_lingual_consistency():
     """
-    ⭐ RESEARCH CRITICAL ⭐
+    RESEARCH CRITICAL 
     Check cross-lingual sentiment consistency
     
     Compares sentiment of original text vs translated text
