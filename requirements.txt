@@ -1,6 +1,3 @@
-# Working Requirements for Python 3.11 (Windows Compatible)
-# Updated to include all listed libraries, algorithms, and ML models
-
 # ============================================
 # Flask Web Framework & Extensions
 # ============================================
@@ -81,26 +78,26 @@ argostranslate
 langdetect==1.0.9
 
 # ============================================
-# Password Hashing
+# Security
 # ============================================
 bcrypt
+passlib
 
 # ============================================
-# Additional Dependencies
+# Async / Networking
 # ============================================
 python-socketio==5.10.0
 eventlet==0.33.3
 
 # ============================================
-# Machine Learning
+# Machine Learning & Data Science
 # ============================================
 scikit-learn
 numpy
 scipy
+matplotlib
 
 # ============================================
-# Notes
+# Scheduler
 # ============================================
-# Install spaCy model: python -m spacy download en_core_web_sm
-# Algorithms: LSA, Luhn, RAKE, YAKE, Rule-Based Matching, Hybrid Keyword + ML Classifier, Zero-Shot Classification, SHA256 Hashing, Regex Cleaning, Weighted Scoring
-# ML Models: BERTweet, en_core_web_sm, facebook/bart-large-mnli, Custom ML Classifier
+APScheduler
