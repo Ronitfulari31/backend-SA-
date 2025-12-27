@@ -119,8 +119,8 @@ class Document:
     # ---------------- UPDATE METHODS (UNCHANGED) ----------------
 
     @staticmethod
-    def update_preprocessing(db, doc_id, clean_text, language, text_hash, preprocessing_time):
-        db.documents.update_one(
+    def update_preprocessing(db, doc_id, clean_text, language, text_hash, preprocessing_time, collection="documents"):
+        db[collection].update_one(
             {'_id': ObjectId(doc_id)},
             {'$set': {
                 'clean_text': clean_text,
@@ -132,8 +132,8 @@ class Document:
         )
 
     @staticmethod
-    def update_translation(db, doc_id, translated_text, engine, time_taken):
-        db.documents.update_one(
+    def update_translation(db, doc_id, translated_text, engine, time_taken, collection="documents"):
+        db[collection].update_one(
             {'_id': ObjectId(doc_id)},
             {'$set': {
                 'translated_text': translated_text,
@@ -145,13 +145,13 @@ class Document:
         )
 
     @staticmethod
-    def update_sentiment(db, doc_id, label=None, confidence=0.0, method="unknown", scores=None, time_taken=0.0, sentiment=None):
+    def update_sentiment(db, doc_id, label=None, confidence=0.0, method="unknown", scores=None, time_taken=0.0, sentiment=None, collection="documents"):
         # Handle cases where 'sentiment' is used instead of 'label'
         final_label = label if label is not None else sentiment
         if final_label is None:
             final_label = "neutral"
             
-        db.documents.update_one(
+        db[collection].update_one(
             {'_id': ObjectId(doc_id)},
             {'$set': {
                 'sentiment.label': final_label,
@@ -164,8 +164,8 @@ class Document:
         )
 
     @staticmethod
-    def update_event(db, doc_id, event_type, confidence, time_taken):
-        db.documents.update_one(
+    def update_event(db, doc_id, event_type, confidence, time_taken, collection="documents"):
+        db[collection].update_one(
             {'_id': ObjectId(doc_id)},
             {'$set': {
                 'event_type': event_type,
@@ -176,8 +176,8 @@ class Document:
         )
 
     @staticmethod
-    def update_locations(db, doc_id, locations, time_taken):
-        db.documents.update_one(
+    def update_locations(db, doc_id, locations, time_taken, collection="documents"):
+        db[collection].update_one(
             {'_id': ObjectId(doc_id)},
             {'$set': {
                 'locations': locations,
@@ -187,8 +187,8 @@ class Document:
         )
 
     @staticmethod
-    def mark_processed(db, doc_id, processing_time):
-        db.documents.update_one(
+    def mark_processed(db, doc_id, processing_time, collection="documents"):
+        db[collection].update_one(
             {'_id': ObjectId(doc_id)},
             {'$set': {
                 'processed': True,

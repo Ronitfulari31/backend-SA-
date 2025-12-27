@@ -16,6 +16,8 @@ from app.models.document import Document
 
 from app.services.location_extraction import location_extraction_service
 from app.services.pipeline import process_document_pipeline
+from app.services.translation import translation_service
+from app.utils.language import decide_second_language, translate_analysis_additive, get_or_create_translated_analysis
 
 logger = logging.getLogger(__name__)
 documents_bp = Blueprint('documents', __name__)
@@ -488,26 +490,56 @@ def get_document(doc_id):
                 'message': 'Document not found'
             }), 404
 
+        doc_data = {
+            'document_id': str(document['_id']),
+            'filename': document.get('filename', 'N/A'),
+            'source': document.get('source', 'unknown'),
+            'timestamp': str(document.get('timestamp', '')),
+            'raw_text': document.get('raw_text', ''),
+            'clean_text': document.get('clean_text', ''),
+            'language': document.get('language', 'unknown'),
+            'translated_text': document.get('translated_text', None),
+            'sentiment': document.get('sentiment', {}),
+            'event_type': document.get('event_type', 'unknown'),
+            'event_confidence': document.get('event_confidence', 0.0),
+            'locations': document.get('locations', []),
+            'processing_time': document.get('processing_time', 0.0),
+            'pipeline_metrics': document.get('pipeline_metrics', {}),
+            'processed': document.get('processed', False)
+        }
+
+        # 🔹 Multi-Language Response Architecture (Additive)
+        article_lang = document.get("language")
+        second_lang = decide_second_language(article_lang)
+
+        if second_lang:
+            try:
+                # Build analysis_en for translation helper
+                analysis_en = {
+                    "sentiment": doc_data["sentiment"],
+                    "location": doc_data["locations"],
+                }
+                
+                # Use read-through cache
+                translated_data = get_or_create_translated_analysis(
+                    doc=document,
+                    analysis_en=analysis_en,
+                    target_lang=second_lang,
+                    translator_service=translation_service,
+                    collection=current_app.db.documents,
+                    logger=logger
+                )
+                
+                doc_data["analysis_translated"] = {
+                    second_lang: translated_data
+                }
+            except Exception as te:
+                logger.error(f"Additive translation failed for {second_lang}: {te}")
+
         return jsonify({
             'status': 'success',
             'message': 'Document retrieved successfully',
-            'data': {
-                'document_id': str(document['_id']),
-                'filename': document.get('filename', 'N/A'),
-                'source': document.get('source', 'unknown'),
-                'timestamp': str(document.get('timestamp', '')),
-                'raw_text': document.get('raw_text', ''),
-                'clean_text': document.get('clean_text', ''),
-                'language': document.get('language', 'unknown'),
-                'translated_text': document.get('translated_text', None),
-                'sentiment': document.get('sentiment', {}),
-                'event_type': document.get('event_type', 'unknown'),
-                'event_confidence': document.get('event_confidence', 0.0),
-                'locations': document.get('locations', []),
-                'processing_time': document.get('processing_time', 0.0),
-                'pipeline_metrics': document.get('pipeline_metrics', {}),
-                'processed': document.get('processed', False)
-            }
+            'data': doc_data
         }), 200
 
     except Exception as e:

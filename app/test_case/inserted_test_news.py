@@ -15,6 +15,12 @@ COLLECTION_NAME = "documents"
 def make_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
+def hash_url(url: str) -> str:
+    """Hash URL for deduplication"""
+    if not url:
+        return ""
+    return hashlib.sha256(url.strip().lower().encode("utf-8")).hexdigest()
+
 # ---------------------------------------------------------
 # DB CONNECTION
 # ---------------------------------------------------------
@@ -43,10 +49,36 @@ documents = [
             "original_url": "https://m.economictimes.com/news/newsblogs/pahalgam-terror-arrest-live-updates-pm-modi-amit-shah-omar-abdullah-india-pakistan-indus-water-treaty-simla-agreement-jammu-kashmir-news-today/liveblog/120600553.cms",
             "published_date": datetime.utcnow(),
             "category": "general",
-            "status": "pending"
+            "status": "pending",
+            "source_url_hash": hash_url("https://m.economictimes.com/news/newsblogs/pahalgam-terror-arrest-live-updates-pm-modi-amit-shah-omar-abdullah-india-pakistan-indus-water-treaty-simla-agreement-jammu-kashmir-news-today/liveblog/120600553.cms"),
+            "content_hash": make_hash("After a terror attack in Pahalgam, the government issued directives and enhanced security measures across the region.")
         },
         "processed": False
     },
+    {
+    "source": "abp_rss_feed",
+    "source_type": "news_article",
+    "raw_text": """नयी दिल्ली। राष्ट्रीय स्वयंसेवक संघ (RSS) प्रमुख मोहन भागवत ने कहा है कि देश विगत कुछ समय में सामाजिक एकता के लिए प्रयास कर रहा है और सांस्कृतिक मूल्यों को मजबूत करने का समय आया है। 
+    संघ की गतिविधियों और हिंदुस्तान की सांस्कृतिक पहचान पर बोलते हुए भागवत ने कहा कि ‘सांस्कृतिक धरोहर का प्रचार सभी वर्गों को जोड़ने का काम करता है।’ 
+    उन्होंने सामाजिक न्याय और समानता की जरूरत पर भी जोर दिया तथा कहा कि भारत एकता और विविधता का संगम है।""",
+    "clean_text": """नयी दिल्ली। राष्ट्रीय स्वयंसेवक संघ (RSS) प्रमुख मोहन भागवत ने कहा है कि देश सामाजिक एकता और सांस्कृतिक मूल्यों के प्रचार पर जोर दे रहा है। 
+    उन्होंने कहा कि सांस्कृतिक पहचान और सामाजिक न्याय दोनों ही देश के विकास के लिए बेहद महत्वपूर्ण हैं, और उन्होंने सभी समुदायों को मिलकर काम करने का आह्वान किया।""",
+    "language": "hi",
+    "text_hash": make_hash("rss_abp_mohan_bhagwat_hi"),
+    "timestamp": datetime.utcnow(),
+    "metadata": {
+        "title": "RSS प्रमुख मोहन भागवत का सांस्कृतिक और सामाजिक एकता पर जोर",
+        "publisher": "ABP Live",
+        "original_url": "https://news.abplive.com/news/india/rss-and-bjp-are-one-ideological-family-no-friction-between-us-ram-madhav-1794955",
+        "published_date": datetime.utcnow(),
+        "category": "national",
+        "status": "pending",
+        "source_url_hash": hash_url("https://news.abplive.com/news/india/rss-and-bjp-are-one-ideological-family-no-friction-between-us-ram-madhav-1794955"),
+        "content_hash": make_hash("rss_abp_mohan_bhagwat_hi")
+    },
+    "processed": False
+    }, 
+
 
     {
     "source": "manual_test",
@@ -68,7 +100,9 @@ documents = [
         "original_url": "https://hindi.economictimes.com/sustainability/green-cover-increases-in-up-plantation-drive-sets-record/articleshow/122381851.cms",
         "published_date": datetime.utcnow(),
         "category": "environment",
-        "status": "pending"
+        "status": "pending",
+        "source_url_hash": hash_url("https://hindi.economictimes.com/sustainability/green-cover-increases-in-up-plantation-drive-sets-record/articleshow/122381851.cms"),
+        "content_hash": make_hash("up_plantation_drive_hindi_et")
     },
     "processed": False
     },
@@ -86,7 +120,9 @@ documents = [
         "original_url": "https://www.chinanews.com.cn/gn/2025/12-22/10538034.shtml",
         "published_date": datetime.utcnow(),
         "category": "technology",
-        "status": "pending"
+        "status": "pending",
+        "source_url_hash": hash_url("https://www.chinanews.com.cn/gn/2025/12-22/10538034.shtml"),
+        "content_hash": make_hash("china_news_uav_standards_2025")
     },
     "processed": False
 }

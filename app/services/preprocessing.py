@@ -29,6 +29,17 @@ class PreprocessingService:
             flags=re.UNICODE
         )
 
+        # ----------------------------------------------------
+        # JUNK FILTERS (Noise removal for better NLP)
+        # ----------------------------------------------------
+        self.junk_patterns = [
+            re.compile(r"Tu suscripción se está usando.*", re.IGNORECASE),
+            re.compile(r"Disponible en todas las plataformas.*", re.IGNORECASE),
+            re.compile(r"Escúchanos en.*", re.IGNORECASE),
+            re.compile(r"\b\d{9,12}\b"),              # Phone numbers
+            re.compile(r"\S+@\S+"),                   # Emails
+        ]
+
     # ----------------------------------------------------
     # Language detection
     # ----------------------------------------------------
@@ -72,8 +83,14 @@ class PreprocessingService:
         # 4️⃣ Remove HTML tags
         text = re.sub(r"<[^>]+>", "", text)
 
-        # 5️⃣ Normalize whitespace
-        text = re.sub(r"\s+", " ", text).strip()
+        # 5️⃣ Remove Junk Patterns (Subscription noise, CTAs, etc.)
+        for pattern in self.junk_patterns:
+            text = pattern.sub("", text)
+
+        # 6️⃣ Normalize whitespace & newlines
+        text = re.sub(r"\n{2,}", "\n", text)
+        text = re.sub(r"[ \t]+", " ", text) # Horizontal whitespace
+        text = text.strip()
 
         logger.debug(f"Text cleaned: {len(text)} characters")
         return text

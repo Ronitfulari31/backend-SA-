@@ -1,488 +1,261 @@
-import logging
-import requests
-import trafilatura
-from datetime import datetime, timezone
-from newspaper import Article, Config
-from flask import current_app
-from bs4 import BeautifulSoup
+"""
+News Fetcher
+------------
+Fetches news metadata from the pre-populated 'articles' collection.
+Ingestion is handled by the background RSSScheduler.
+"""
 
-from bson import ObjectId
-
-from app.models.document import Document
+from app.services.persistence.article_store import ArticleStore
+from app.services.fetch.extraction import extract_article_package
 from app.services.pipeline import process_document_pipeline
-from app.services.sentiment import get_sentiment_service
-from app.services.ml_subcategory import ml_predict_subcategory
+from app.services.pagination.cursor_pagination import CursorPagination
+from app.services.ranking.article_ranker import ArticleRanker
+from datetime import datetime, timedelta
+from bson import ObjectId
+import logging
 
 logger = logging.getLogger(__name__)
 
-NEWS_API_TOP_HEADLINES = "https://newsapi.org/v2/top-headlines"
+# Initialize services
+article_store = ArticleStore()
+paginator = CursorPagination(
+    sort_fields=[("created_at", -1), ("_id", -1)],
+    max_limit=50
+)
+ranker = ArticleRanker()
 
-# ---------------------------------------------------------
-# HELPER
-# ---------------------------------------------------------
 
-def is_missing(value):
-    if value is None:
-        return True
+def build_discovery_tiers(context: dict):
+    """
+    Build ordered MongoDB query tiers based on resolved context.
+    Highest priority tier comes first.
+    """
 
-    if isinstance(value, str):
-        stripped = value.strip().lower()
-        if stripped in ("", "null", "none"):
-            return True
-        # Validation helper (not NLP-related)
-        return False
+    tiers = []
 
-    if isinstance(value, dict):
-        if len(value) == 0:
-            return True
-        # 🟢 Added: Check if core sentiment fields are uninitialized
-        if "label" in value and value["label"] in (None, "null", "pending"):
-            return True
-        return False
+    city = context.get("city", "unknown")
+    state = context.get("state", "unknown")
+    country = context.get("country", "unknown")
+    continent = context.get("continent", "unknown")
+    languages = context.get("language", [])
+    category = context.get("category", "unknown")
 
-    if isinstance(value, list):
-        return len(value) == 0
+    def base():
+        q = {}
+        if languages:
+            q["language"] = {"$in": languages}
+        if category != "unknown":
+            q["category"] = category
+        return q
 
-    return False
+    # 1. City Tier
+    if city != "unknown":
+        tiers.append({**base(), "city": city})
 
-# ---------------------------------------------------------
-# LEVEL 1 SUB-CATEGORY RULES (UNCHANGED)
-# ---------------------------------------------------------
+    # 2. State Tier
+    if state != "unknown":
+        tiers.append({**base(), "state": state})
 
-SPORTS_SUBCATEGORY_RULES = {
-    "cricket": {
-        "phrases": ["cricket", "test match", "one day international", "ipl", "icc"],
-        "signals": ["runs", "wickets", "overs", "batsman", "bowler"]
-    },
-    "football": {
-        "phrases": ["football", "soccer", "fifa", "uefa", "premier league"],
-        "signals": ["goal", "penalty", "striker"]
-    },
-    "basketball": {
-        "phrases": ["basketball", "nba", "wnba"],
-        "signals": ["dunk", "three-pointer", "playoffs"]
-    },
-    "tennis": {
-        "phrases": ["tennis", "wimbledon", "us open", "grand slam"],
-        "signals": ["set", "match point", "atp", "wta"]
+    # 3. Country Tier
+    if country != "unknown":
+        tiers.append({**base(), "country": country})
+
+    # 4. Continent Tier
+    if continent != "unknown":
+        tiers.append({**base(), "continent": continent})
+
+    # 5. Global Tier (Always last)
+    tiers.append(base())
+
+    return tiers
+
+
+def _format_article(doc):
+    """
+    Standardize article output for UI.
+    Serves AI summary if analyzed, otherwise the original RSS snippet.
+    """
+    analyzed = doc.get("analyzed", False)
+    return {
+        "_id": str(doc["_id"]),
+        "title": doc.get("title"),
+        "summary": doc.get("summary") if analyzed else doc.get("rss_summary"),
+        "original_url": doc.get("original_url"),
+        "image_url": doc.get("image_url"),
+        "source": doc.get("source"),
+        "category": doc.get("category"),
+        "published_date": doc.get("published_date"),
+        "analyzed": analyzed
     }
-}
-
-DISASTER_SUBCATEGORY_RULES = {
-    "earthquake": {
-        "phrases": ["earthquake", "seismic", "richter"],
-        "signals": ["aftershock", "epicenter", "tremors"]
-    },
-    "flood": {
-        "phrases": ["flood", "flash flood", "river overflow"],
-        "signals": ["submerged", "evacuation", "water level"]
-    },
-    "fire": {
-        "phrases": ["wildfire", "forest fire", "blaze"],
-        "signals": ["firefighters", "smoke"]
-    },
-    "tsunami": {
-        "phrases": ["tsunami", "tidal wave"],
-        "signals": ["coastal evacuation", "waves hit"]
-    }
-}
-
-BUSINESS_SUBCATEGORY_RULES = {
-    "earnings": {
-        "phrases": ["earnings", "profit", "revenue", "q1", "q2", "q3", "q4"],
-        "signals": ["results", "growth", "decline"]
-    },
-    "stock_market": {
-        "phrases": ["stocks", "shares", "market"],
-        "signals": ["index", "trading", "investors"]
-    }
-}
-
-TECHNOLOGY_SUBCATEGORY_RULES = {
-    "product_launch": {
-        "phrases": ["launches", "unveils", "introduces"],
-        "signals": ["device", "feature", "upgrade"]
-    },
-    "artificial_intelligence": {
-        "phrases": ["artificial intelligence", "ai model", "machine learning"],
-        "signals": ["training", "neural", "llm"]
-    }
-}
-
-LEVEL1_RULE_MAP = {
-    "sports": SPORTS_SUBCATEGORY_RULES,
-    "general": DISASTER_SUBCATEGORY_RULES,
-    "health": DISASTER_SUBCATEGORY_RULES,
-    "business": BUSINESS_SUBCATEGORY_RULES,
-    "technology": TECHNOLOGY_SUBCATEGORY_RULES
-}
-
-# ---------------------------------------------------------
-# ENTITY BOOSTING (UNCHANGED)
-# ---------------------------------------------------------
-
-ENTITY_BOOST_MAP = {
-    "sports": {
-        "eagles": "football",
-        "nfl": "football",
-        "ipl": "cricket",
-        "icc": "cricket",
-        "nba": "basketball",
-        "wimbledon": "tennis"
-    },
-    "business": {
-        "apple": "earnings",
-        "google": "earnings",
-        "amazon": "earnings",
-        "ipo": "stock_market",
-        "nasdaq": "stock_market"
-    },
-    "technology": {
-        "openai": "artificial_intelligence",
-        "chatgpt": "artificial_intelligence",
-        "iphone": "product_launch",
-        "android": "product_launch"
-    },
-    "health": {
-        "covid": "public_health",
-        "who": "public_health",
-        "cancer": "disease",
-        "vaccine": "medicine"
-    },
-    "science": {
-        "nasa": "space",
-        "spacex": "space",
-        "climate": "climate",
-        "research": "research"
-    },
-    "entertainment": {
-        "netflix": "movies",
-        "oscars": "movies",
-        "spotify": "music",
-        "album": "music"
-    }
-}
-
-def apply_entity_boost(text, category, sub_category, confidence):
-    boosts = ENTITY_BOOST_MAP.get(category, {})
-    text = text.lower()
-
-    for entity, boosted_sub in boosts.items():
-        if entity in text and sub_category.endswith("_general"):
-            return boosted_sub, min(confidence + 0.25, 0.85)
-
-    return sub_category, confidence
-
-# ---------------------------------------------------------
-# SUB-CATEGORY DETECTION (UNCHANGED)
-# ---------------------------------------------------------
-
-def detect_subcategory_with_confidence(text: str, rules: dict):
-    if not text or not rules:
-        return None, 0.0
-
-    text = text.lower()
-    best_label = None
-    best_score = 0
-
-    for label, rule in rules.items():
-        score = 0
-        for phrase in rule.get("phrases", []):
-            if phrase in text:
-                score += 3
-        for signal in rule.get("signals", []):
-            if signal in text:
-                score += 1
-        if score > best_score:
-            best_score = score
-            best_label = label
-
-    if best_score == 0:
-        return None, 0.0
-
-    return best_label, round(min(1.0, best_score / 6), 2)
-
-def apply_domain_fallback(category, sub_category, confidence):
-    return (sub_category, confidence) if sub_category else (f"{category}_general", 0.2)
-
-def compute_display_sub_category(category, sub_category, confidence):
-    return sub_category if confidence >= 0.4 else f"{category}_general"
-
-# ---------------------------------------------------------
-# SOFT RANKING (UNCHANGED)
-# ---------------------------------------------------------
-
-CATEGORY_RANKING_BIAS = {
-    "sports": 0.10,
-    "business": 0.08,
-    "technology": 0.08,
-    "health": 0.06,
-    "science": 0.06,
-    "entertainment": 0.05,
-    "general": 0.0
-}
-
-def compute_ranking_score(confidence, status, published_date, category):
-    confidence_part = confidence * 0.5
-    analysis_part = 0.25 if status == "completed" else 0.0
-    recency_part = 0.0
-
-    if published_date:
-        try:
-            published = datetime.fromisoformat(published_date.replace("Z", "+00:00"))
-            age_hours = (datetime.now(timezone.utc) - published).total_seconds() / 3600
-            recency_part = max(0.0, 1.0 - min(age_hours / 48, 1.0)) * 0.15
-        except Exception:
-            pass
-
-    category_bias = CATEGORY_RANKING_BIAS.get(category, 0.0)
-    return round(confidence_part + analysis_part + recency_part + category_bias, 3)
-
-# ---------------------------------------------------------
-# ARTICLE EXTRACTION (UNCHANGED)
-# ---------------------------------------------------------
-
-def extract_article_package(url: str):
-    if not url:
-        return {"success": False}, None
-
-    try:
-        downloaded = trafilatura.fetch_url(url)
-        if downloaded:
-            content = trafilatura.extract(downloaded)
-            if content:
-                return {"success": True, "content": content}, url
-    except Exception:
-        logger.warning("Trafilatura extraction failed")
-
-    try:
-        config = Config()
-        config.browser_user_agent = "Mozilla/5.0"
-        article = Article(url, config=config)
-        article.download()
-        article.parse()
-        if article.text:
-            return {"success": True, "content": article.text}, article.canonical_link or url
-    except Exception:
-        logger.warning("Newspaper extraction failed")
-
-    return {"success": False}, url
-
-# ---------------------------------------------------------
-# ARTICLE IMAGE EXTRACTION (UNCHANGED)
-# ---------------------------------------------------------
-
-def extract_article_image(url: str):
-    if not url:
-        return None
-
-    try:
-        response = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
-        )
-        if response.status_code != 200:
-            return None
-
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        og = soup.find("meta", property="og:image")
-        if og and og.get("content"):
-            return og["content"]
-
-        tw = soup.find("meta", attrs={"name": "twitter:image"})
-        if tw and tw.get("content"):
-            return tw["content"]
-
-    except Exception:
-        logger.warning("Article image extraction failed", exc_info=True)
-
-    return None
-
-# ---------------------------------------------------------
-# MAIN SERVICE (LEVEL-1 + CLICK-DRIVEN LEVEL-2)
-# ---------------------------------------------------------
-
-class NewsFetcherService:
 
 
+def fetch_news(context: dict):
+    """
+    Main fetch entry point used by /api/news/fetch
+    Implements Tiered Discovery + Cursor Pagination.
+    """
+    # 1. Read pagination params
+    limit = paginator.clamp_limit(context.get("limit"))
+    cursor = context.get("cursor")
+    cursor_filter = paginator.build_cursor_filter(cursor)
+    
+    since = datetime.utcnow() - timedelta(minutes=30)
+    
+    results = []
+    seen_ids = set()
+    tiers = build_discovery_tiers(context)
+    tier_levels = ["city", "state", "country", "continent", "global"]
+    
+    # We collect more than limit to allow for cross-tier filling, 
+    # but we'll trim to 'limit' at the end.
+    MAX_COLLECTION = 100 
 
-    def fetch_category_news(self, db, user_id, category):
-        api_key = current_app.config.get("NEWSAPI_KEY")
-        if not api_key:
-            raise RuntimeError("NEWSAPI_KEY missing")
+    for tier_level, tier_query in zip(tier_levels, tiers):
+        if len(results) >= MAX_COLLECTION:
+            break
 
-        response = requests.get(
-            NEWS_API_TOP_HEADLINES,
-            params={
-                "category": category,
-                "language": "en",
-                "pageSize": 20,
-                "apiKey": api_key
+        # Apply Cursor Filter
+        match_stage = tier_query.copy()
+        if cursor_filter:
+            match_stage = {
+                "$and": [match_stage, cursor_filter]
+            }
+
+        # Add freshness filter (unless strictly paginating deep)
+        match_stage["created_at"] = {"$gte": since}
+
+        # Aggregation Pipeline for this tier
+        pipeline = [
+            { "$match": match_stage },
+            { "$sort": { "created_at": -1, "_id": -1 } },
+            {
+                "$group": {
+                    "_id": "$source",
+                    "articles": { "$push": "$$ROOT" }
+                }
             },
-            timeout=30
-        )
-
-        if response.status_code != 200:
-            return {"status": "error", "message": "NewsAPI error"}
-
-        rules = LEVEL1_RULE_MAP.get(category)
-        results = []
-
-        for article in response.json().get("articles", []):
-            url = article.get("url")
-            if not url:
-                continue
-
-            text = f"{article.get('title','')} {article.get('description','')}"
-
-            sub_category, confidence = detect_subcategory_with_confidence(text, rules)
-            sub_category, confidence = apply_domain_fallback(category, sub_category, confidence)
-            sub_category, confidence = apply_entity_boost(text, category, sub_category, confidence)
-
-            if confidence < 0.4 or sub_category.endswith("_general"):
-                ml_sub, ml_conf = ml_predict_subcategory(text, category)
-                if ml_sub and ml_conf > confidence:
-                    sub_category = ml_sub
-                    confidence = ml_conf
-
-            display_sub_category = compute_display_sub_category(
-                category, sub_category, confidence
-            )
-
-            ranking_score = compute_ranking_score(
-                confidence,
-                "ingested",
-                article.get("publishedAt"),
-                category
-            )
-
-            # -----------------------------------------------------
-            # LEVEL-1 SENTIMENT (MITIGATE NULLS)
-            # -----------------------------------------------------
-            sentiment_svc = get_sentiment_service()
-            l1_sentiment = sentiment_svc.analyze(text, method="vader")
-
-            doc_id = Document.create(
-                db=db,
-                user_id=user_id,
-                raw_text=article.get("description") or article.get("title"),
-                source="news",
-                metadata={
-                    "title": article.get("title"),
-                    "original_url": url,
-                    "publisher": article.get("source", {}).get("name"),
-                    "published_date": article.get("publishedAt"),
-                    "category": category,
-                    "sub_category": sub_category,
-                    "sub_category_confidence": confidence,
-                    "display_sub_category": display_sub_category,
-                    "ranking_score": ranking_score,
-                    "thumbnail_image_url": article.get("urlToImage"),
-                    "thumbnail_image_source": "newsapi",
-                    "status": "ingested",
-                    "analysis_stage": "level_1_only",
-                    "event_scope": "level_1"
+            {
+                "$project": {
+                    "articles": { "$slice": ["$articles", 15] }
                 }
-            )
+            },
+            { "$unwind": "$articles" },
+            { "$replaceRoot": { "newRoot": "$articles" } }
+        ]
 
-            # PROACTIVE UPDATE: Save Level-1 sentiment immediately
-            Document.update_sentiment(
-                db, doc_id,
-                label=l1_sentiment["sentiment"],
-                confidence=l1_sentiment["confidence"],
-                method=f"preliminary_{l1_sentiment['method']}",
-                scores=l1_sentiment.get("scores", {}),
-                time_taken=l1_sentiment["analysis_time"]
-            )
+        # Execute aggregation
+        batch = list(article_store.collection.aggregate(pipeline))
 
-            results.append({
-                "id": str(doc_id),
-                "title": article.get("title"),
-                "category": category,
-                "display_sub_category": display_sub_category,
-                "confidence": confidence,
-                "ranking_score": ranking_score,
-                "thumbnail_image_url": article.get("urlToImage"),
-                "original_url": article.get("url"),
-                "source": article.get("source", {}).get("name"),
-                "sentiment": {
-                    "label": l1_sentiment["sentiment"],
-                    "confidence": l1_sentiment["confidence"]
-                }
-            })
+        for article in batch:
+            aid = str(article["_id"])
+            if aid not in seen_ids:
+                # Rank scoring
+                article["_rank_score"] = ranker.score(
+                    article=article,
+                    context=context,
+                    tier_level=tier_level
+                )
+                results.append(article)
+                seen_ids.add(aid)
 
-        results.sort(key=lambda x: x["ranking_score"], reverse=True)
+            if len(results) >= MAX_COLLECTION:
+                break
 
+    # 2. Final Sorting (Rank first, then recency)
+    results.sort(
+        key=lambda a: (-a["_rank_score"], a["created_at"], str(a["_id"])),
+        reverse=False # Handled by -score and DESC logic
+    )
+
+    # 3. Trim results + build next cursor
+    results = results[:limit]
+    
+    next_cursor = None
+    if results:
+        next_cursor = paginator.encode_cursor(results[-1])
+
+    # 4. Final response (Cleanup rank internal field)
+    if not results:
         return {
             "status": "success",
-            "category": category,
-            "count": len(results),
-            "articles": results
+            "count": 0,
+            "articles": [],
+            "message": "No articles available yet. Please try again shortly.",
+            "context": context,
+            "empty": True
         }
 
-    # -----------------------------------------------------
-    # UPDATED: FULL + PARTIAL ANALYSIS SUPPORT
-    # -----------------------------------------------------
+    formatted_articles = []
+    for a in results:
+        a.pop("_rank_score", None)
+        formatted_articles.append(_format_article(a))
 
+    return {
+        "status": "success",
+        "count": len(results),
+        "articles": formatted_articles,
+        "next_cursor": next_cursor,
+        "has_more": bool(next_cursor),
+        "context": context,
+        "cache_hit": True
+    }
+
+
+def scrape_and_analyze_article(db, article_id, stages=None):
+    """
+    Flow 3: User clicks "Analyze"
+    Fetches full content on-demand and runs the NLP pipeline.
+    """
+    article_data = db.articles.find_one({"_id": ObjectId(article_id)})
+    if not article_data:
+        logger.error(f"Article {article_id} not found for analysis")
+        return None
+
+    # 1. Fetch full content
+    url = article_data.get("original_url")
+    extraction, resolved_url = extract_article_package(url)
+    
+    if not extraction.get("success") or not extraction.get("content") or len(extraction["content"].strip()) < 200:
+        raise ValueError(f"Article extraction failed or too short for doc_id={article_id}")
+
+    content = extraction["content"]
+
+    # 2. Run NLP Pipeline
+    # We update raw_text first
+    db.articles.update_one(
+        {"_id": ObjectId(article_id)},
+        {"$set": {"raw_text": content}}
+    )
+
+    # Re-using the collection-agnostic pipeline
+    process_document_pipeline(
+        db=db,
+        doc_id=article_id,
+        raw_text=content,
+        stages=stages,
+        collection="articles"
+    )
+
+    # 3. Mark as analyzed
+    db.articles.update_one(
+        {"_id": ObjectId(article_id)},
+        {"$set": {
+            "analyzed": True,
+            "metadata.status": "completed",
+            "metadata.analysis_stage": "level_2_complete",
+            "metadata.analyzed_at": datetime.utcnow()
+        }}
+    )
+    
+    return db.articles.find_one({"_id": ObjectId(article_id)})
+
+
+# For backward compatibility with routes/news.py
+class NewsFetcherService:
+    def fetch_news_with_context(self, db, user_id, context):
+        return fetch_news(context)
+    
     def scrape_and_analyze_article(self, db, doc_id, stages=None):
-
-        doc = db.documents.find_one({"_id": ObjectId(doc_id)})
-        if not doc:
-            return
-
-        meta = doc.get("metadata", {})
-
-        if not stages and meta.get("analysis_stage") == "level_2_complete":
-            logger.info(f"[{doc_id}] Analysis already complete → skipping")
-            return
-
-        db.documents.update_one(
-            {"_id": doc["_id"]},
-            {"$set": {
-                "metadata.status": "analyzing",
-                "metadata.analysis_stage": "level_2_in_progress"
-            }}
-        )
-
-        extraction, resolved_url = extract_article_package(meta.get("original_url"))
-        if not extraction["success"]:
-            return
-
-        content = extraction["content"]
-        article_image = extract_article_image(resolved_url)
-
-        # ---------------- FULL / PARTIAL PIPELINE ----------------
-        process_document_pipeline(
-            db=db,
-            doc_id=str(doc["_id"]),
-            raw_text=content,
-            stages=stages
-        )
-
-        # ---------------- FINAL METADATA (UNCHANGED)
-        new_ranking = compute_ranking_score(
-            meta.get("sub_category_confidence", 0),
-            "completed",
-            meta.get("published_date"),
-            meta.get("category")
-        )
-
-        db.documents.update_one(
-            {"_id": doc["_id"]},
-            {"$set": {
-                "raw_text": content,
-                "metadata.article_image_url": article_image,
-                "metadata.article_image_source": "opengraph",
-                "metadata.status": "completed",
-                "metadata.analysis_stage": "level_2_complete",
-                "metadata.event_scope": "level_2",
-                "metadata.analyzed_at": datetime.utcnow(),
-                "metadata.ranking_score": new_ranking,
-                "processed": True
-            }}
-        )
-
+        return scrape_and_analyze_article(db, doc_id, stages)
 
 news_fetcher_service = NewsFetcherService()

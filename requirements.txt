@@ -38,6 +38,7 @@ requests==2.32.5
 # ============================================
 # Web Content Extraction
 # ============================================
+feedparser
 trafilatura
 newspaper3k
 beautifulsoup4
@@ -72,6 +73,7 @@ sumy==0.11.0
 # ============================================
 deep-translator==1.11.4
 googletrans
+argostranslate
 
 # ============================================
 # Language Detection

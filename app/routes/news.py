@@ -9,6 +9,9 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from bson import ObjectId
 
 from app.services.news_fetcher import news_fetcher_service
+from app.services.fetch.resolver import resolve_context
+from app.services.translation import translation_service
+from app.utils.language import decide_second_language, translate_analysis_additive, get_or_create_translated_analysis
 
 logger = logging.getLogger(__name__)
 news_bp = Blueprint('news', __name__)
@@ -19,86 +22,32 @@ news_bp = Blueprint('news', __name__)
 # ---------------------------------------------------------
 
 def is_missing(value):
-    if value is None:
-        return True
+    return value is None or value == "" or value == []
 
-    if isinstance(value, str):
-        stripped = value.strip().lower()
-        if stripped in ("", "null", "none"):
-            return True
-        # 🔴 critical: too short for NLP (REMOVED: Now allowing headlines)
-        # if len(stripped) < 40:
-        #     return True
-        return False
-
-    if isinstance(value, dict):
-        if len(value) == 0:
-            return True
-        # 🟢 Added: Check if core sentiment fields are uninitialized
-        if "label" in value and value["label"] in (None, "null", "pending"):
-            return True
-        return False
-
-    if isinstance(value, list):
-        return len(value) == 0
-
-    return False
-
-# ---------------------------------------------------------
-# HELPER: DETECT MISSING PIPELINE STAGES (MERGED, ADDITIVE)
-# ---------------------------------------------------------
 
 def get_missing_analysis_stages(doc):
     missing = []
 
-    cleaned_text = doc.get("cleaned_text")
-    language = doc.get("language")
+    if is_missing(doc.get("raw_text")):
+        missing.append("raw_text")
 
-    # Preprocessing
-    if is_missing(cleaned_text):
-        missing.append("preprocessing")
+    if is_missing(doc.get("summary")):
+        missing.append("summary")
 
-    # Translation (ONLY if non-English)
-    if language and language not in ("en", "unknown"):
-        if is_missing(doc.get("translated_text")):
-            missing.append("translation")
-
-    # Sentiment
     if is_missing(doc.get("sentiment")):
         missing.append("sentiment")
 
-    # Event
-    if (
-        is_missing(doc.get("event_type")) or
-        is_missing(doc.get("event_confidence"))
-    ):
-        missing.append("event")
-
-    # Location
-    if is_missing(doc.get("location")):
-        missing.append("location")
-
-    # Summary
-    summary = doc.get("summary", {})
-    if is_missing(summary) or is_missing(summary.get("text")):
-        missing.append("summary")
-
-    # Keywords
     if is_missing(doc.get("keywords")):
         missing.append("keywords")
 
-    # Entities
     if is_missing(doc.get("entities")):
         missing.append("entities")
 
-    # -------------------------------------------------
-    # ✅ DEPENDENCY ENFORCEMENT (ADDED – NO REMOVALS)
-    # -------------------------------------------------
-    # If text changes, semantic stages must re-run
-    if "preprocessing" in missing or "translation" in missing:
-        for stage in ("sentiment", "event", "summary", "keywords", "entities"):
-            if stage not in missing:
-                missing.append(stage)
+    if is_missing(doc.get("event")):
+        missing.append("event")
+
+    if is_missing(doc.get("locations")):
+        missing.append("locations")
 
     return missing
 
@@ -116,41 +65,38 @@ def list_news():
         skip = (page - 1) * limit
 
         db = current_app.db
-        query = {'source': 'news'}
+        query = {}  # Querying articles collection directly
 
         category = request.args.get('category')
         sub_category = request.args.get('sub_category')
 
         if category:
-            query['metadata.category'] = category
+            query['category'] = category
 
         if sub_category:
-            query['metadata.sub_category'] = sub_category
+            query['sub_category'] = sub_category
 
-        total = db.documents.count_documents(query)
+        total = db.articles.count_documents(query)
 
         cursor = (
-            db.documents
+            db.articles
             .find(query)
-            .sort([('metadata.published_date', -1), ('_id', -1)])
+            .sort([('published_date', -1), ('_id', -1)])
             .skip(skip)
             .limit(limit)
         )
 
         articles = []
         for doc in cursor:
-            meta = doc.get('metadata', {})
             articles.append({
                 'id': str(doc['_id']),
-                'title': meta.get('title'),
-                'source': meta.get('publisher'),
-                'original_url': meta.get('original_url'),
-                'resolved_url': meta.get('resolved_url'),
-                'thumbnail_image_url': meta.get('thumbnail_image_url'),
-                'category': meta.get('category'),
-                'sub_category': meta.get('sub_category'),
-                'analysis_stage': meta.get('analysis_stage', 'level_1_only'),
-                'status': meta.get('status', 'ingested')
+                'title': doc.get('title'),
+                'source': doc.get('source'),
+                'original_url': doc.get('original_url'),
+                'published_date': doc.get('published_date'),
+                'summary': doc.get('summary'),
+                'category': doc.get('category'),
+                'analyzed': doc.get('analyzed', False)
             })
 
         return jsonify({
@@ -189,10 +135,19 @@ def fetch_category_news():
         user_id = get_jwt_identity()
         db = current_app.db
 
-        result = news_fetcher_service.fetch_category_news(
+        # Map old API to new fetch_news
+        context = {
+            "category": category.lower(),
+            "language": ["en"],
+            "country": "unknown",
+            "continent": "unknown",
+            "scope": "global"
+        }
+
+        result = news_fetcher_service.fetch_news_with_context(
             db=db,
             user_id=user_id,
-            category=category.lower()
+            context=context
         )
 
         return jsonify(result), 200
@@ -215,20 +170,20 @@ def analyze_news_item(doc_id):
     try:
         db = current_app.db
 
-        doc = db.documents.find_one({"_id": ObjectId(doc_id)})
+        doc = db.articles.find_one({"_id": ObjectId(doc_id)})
         if not doc:
-            return jsonify({"status": "error", "message": "Document not found"}), 404
+            return jsonify({"status": "error", "message": "Article not found"}), 404
 
         missing_stages = get_missing_analysis_stages(doc)
 
-        if missing_stages:
-            logger.info(f"[{doc_id}] Missing stages → {missing_stages}")
+        if missing_stages or not doc.get("analyzed"):
+            logger.info(f"[{doc_id}] Analyzing article...")
             news_fetcher_service.scrape_and_analyze_article(
                 db=db,
                 doc_id=doc_id,
                 stages=missing_stages
             )
-            doc = db.documents.find_one({"_id": ObjectId(doc_id)})
+            doc = db.articles.find_one({"_id": ObjectId(doc_id)})
         else:
             logger.info(f"[{doc_id}] Analysis already present → returning cached data")
 
@@ -240,8 +195,7 @@ def analyze_news_item(doc_id):
             if hasattr(published_date, "isoformat")
             else published_date
         )
-
-        return jsonify({
+        response_data = {
             "status": "success",
             "document_id": str(doc["_id"]),
             "article": {
@@ -256,9 +210,9 @@ def analyze_news_item(doc_id):
                 "cleaned": doc.get("cleaned_text", "")
             },
             "summary": {
-                "text": doc.get("summary", {}).get("text", ""),
-                "method": doc.get("summary", {}).get("method", ""),
-                "sentences": doc.get("summary", {}).get("sentences", 0)
+                "text": doc.get("summary", ""),
+                "method": "lsa",
+                "sentences": 3
             },
             "analysis": {
                 "sentiment": doc.get("sentiment") or {
@@ -266,16 +220,48 @@ def analyze_news_item(doc_id):
                     "confidence": 0.0,
                     "method": "fallback"
                 },
-                "event": {
-                    "type": doc.get("event_type", "other"),
-                    "confidence": doc.get("event_confidence", 0.0),
-                    "guarded": doc.get("event_guarded", False)
+                "event": doc.get("event") or {
+                    "type": "other",
+                    "confidence": 0.0,
+                    "method": "fallback"
                 },
-                "location": doc.get("location"),
+                "location": doc.get("locations") if doc.get("locations") and any(doc["locations"].values()) else {
+                    "status": "not_detected",
+                },
                 "keywords": doc.get("keywords", []),
                 "entities": doc.get("entities", [])
             }
-        }), 200
+        }
+
+        # 🔹 Multi-Language Response Architecture (Additive)
+        article_lang = doc.get("language")
+        second_lang = decide_second_language(article_lang)
+
+        if second_lang:
+            try:
+                # Use current analysis as source
+                analysis_en = response_data["analysis"]
+                
+                # Use read-through cache
+                translated_data = get_or_create_translated_analysis(
+                    doc=doc,
+                    analysis_en={
+                        "summary": response_data["summary"]["text"],
+                        **analysis_en
+                    },
+                    target_lang=second_lang,
+                    translator_service=translation_service,
+                    collection=db.articles,
+                    logger=logger
+                )
+                
+                response_data["analysis_translated"] = {
+                    second_lang: translated_data
+                }
+            except Exception as te:
+                logger.error(f"Additive translation failed for {second_lang}: {te}")
+
+        return jsonify(response_data), 200
 
     except Exception as e:
         logger.exception("Level-2 analysis failed")
@@ -325,3 +311,40 @@ def get_news_full_view(doc_id):
 
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@news_bp.route('/fetch', methods=['GET'])
+@jwt_required()
+def fetch_news_with_params():
+    """
+    NEW unified fetching API.
+    Uses resolver + param-based fetching.
+    Does NOT affect existing APIs.
+    """
+    try:
+        params = request.args.to_dict()
+        user_id = get_jwt_identity()
+        db = current_app.db
+
+        # 🔹 Resolve context (already correct)
+        context = resolve_context(params, db=db)
+
+        # 🔹 Fetch news using new logic (metadata already enriched in fetcher)
+        result = news_fetcher_service.fetch_news_with_context(
+            db=db,
+            user_id=user_id,
+            context=context
+        )
+
+        return jsonify({
+            "status": "success",
+            "context": context,
+            **result
+        }), 200
+
+    except Exception as e:
+        logger.exception("Param-based fetch failed")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500

@@ -1,10 +1,12 @@
 import os
 import logging
 import signal
+from threading import Thread
 from dotenv import load_dotenv
 
 from app import create_app
 from app.database import init_db, close_db
+from app.services.scheduler.rss_scheduler import RSSScheduler
 
 # ---------------------------------------------------------
 # ENVIRONMENT SETUP (CRITICAL FOR ML STABILITY)
@@ -18,6 +20,18 @@ os.environ.setdefault(
 
 # Disable Hugging Face telemetry
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
+# Argos Translate package cache redirection
+os.environ.setdefault(
+    "ARGOS_PACKAGES_DIR",
+    r"D:\Projects\Backend(SA)_cache\argos_cache"
+)
+
+# System-wide Temp redirection (Prevents "No space left" if C: is full)
+TEMP_REDIRECT = r"D:\Projects\Backend(SA)_cache\temp"
+os.makedirs(TEMP_REDIRECT, exist_ok=True)
+os.environ.setdefault("TEMP", TEMP_REDIRECT)
+os.environ.setdefault("TMP", TEMP_REDIRECT)
 
 # ---------------------------------------------------------
 # LOAD ENV & LOGGING
@@ -49,6 +63,7 @@ from app.routes.settings import settings_bp
 from app.routes.dashboard import dashboard_bp
 from app.routes.evaluation import evaluation_bp
 from app.routes.news import news_bp
+from app.routes.coverage import coverage_bp
 
 app.register_blueprint(auth_bp, url_prefix="/api/auth")
 app.register_blueprint(documents_bp, url_prefix="/api/documents")
@@ -57,12 +72,14 @@ app.register_blueprint(settings_bp, url_prefix="/api")
 app.register_blueprint(dashboard_bp, url_prefix="/api/dashboard")
 app.register_blueprint(evaluation_bp, url_prefix="/api/evaluation")
 app.register_blueprint(news_bp, url_prefix="/api/news")
+app.register_blueprint(coverage_bp)
 
 logger.info("✓ Authentication API registered")
 logger.info("✓ Documents API registered")
 logger.info("✓ Dashboard API registered")
 logger.info("✓ Evaluation API registered")
 logger.info("✓ News API registered")
+logger.info("✓ Coverage API registered")
 
 # ---------------------------------------------------------
 # HEALTH CHECK
@@ -161,6 +178,13 @@ if __name__ == "__main__":
     logger.info("  ✓ Location Extraction")
     logger.info("=" * 60)
     logger.info("Server is listening for requests...")
+
+    # ---------------------------------------------------------
+    # START BACKGROUND SCHEDULER
+    # ---------------------------------------------------------
+    logger.info("⏱ Starting RSS Scheduler (15 min interval)...")
+    scheduler = RSSScheduler(interval_minutes=5)
+    Thread(target=scheduler.start, daemon=True).start()
 
     app.run(
         debug=os.getenv("FLASK_DEBUG", True),
