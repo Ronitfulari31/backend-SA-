@@ -66,6 +66,7 @@ class Document:
 
             # ---------------- Translation ----------------
             'translated_text': None,
+            'translated_to_en': False,
             'translation_engine': None,
             'translation_time': None,
 
@@ -137,6 +138,7 @@ class Document:
             {'_id': ObjectId(doc_id)},
             {'$set': {
                 'translated_text': translated_text,
+                'translated_to_en': True,
                 'translation_engine': engine,
                 'translation_time': time_taken,
                 'pipeline_metrics.translation_time': time_taken,

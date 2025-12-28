@@ -79,8 +79,8 @@ def safe_translate(db, doc_id, text, language, collection="documents"):
     result = translation_service.translate_to_english(text, source_lang)
 
     if not result.get("success"):
-        logger.error(f"[{doc_id}] Translation failed → continuing with original text")
-        return text
+        logger.error(f"[{doc_id}] Translation failed")
+        return None  # ❌ Fail explicitly for non-English
 
     Document.update_translation(
         db,
@@ -143,15 +143,32 @@ def process_document_pipeline(db, doc_id, raw_text, stages=None, collection="doc
         language = resolve_language(doc, preprocess_result.get("language"))
 
         # ---------------- Stage 2: Translation ----------------
-        analysis_text = safe_translate(db, doc_id, clean_text or raw_text, language, collection=collection)
+        # english_text handles BOTH: Original English OR the English Translation
+        english_text = safe_translate(db, doc_id, clean_text or raw_text, language, collection=collection)
 
-        if not analysis_text.strip():
-            raise ValueError("Analysis text empty")
+        # Refresh doc to check translation status
+        doc = db[collection].find_one({"_id": ObjectId(doc_id)})
+        
+        # CRITICAL PIPELINE GUARD: Prevent NLP on non-English text if translation failed
+        if doc.get("language") != "en" and not doc.get("translated_to_en"):
+            logger.warning(
+                f"[{doc_id}] ⚠️ Skipping NLP — translation failed for language={doc.get('language')}"
+            )
+            return {
+                "success": False,
+                "status": "skipped",
+                "reason": "translation_failed",
+                "language": doc.get("language")
+            }
+
+        if not english_text or not english_text.strip():
+            logger.error(f"[{doc_id}] Pipeline aborted: English text content is empty")
+            return {"success": False, "error": "English text empty"}
 
         # ---------------- Stage 3: Event Detection ----------------
         if should_run("event"):
             event_service = get_event_detection_service()
-            event_result = event_service.classify(analysis_text, method="hybrid")
+            event_result = event_service.classify(english_text, method="hybrid")
             
             category = doc.get("metadata", {}).get("category")
             safe_type, safe_conf = apply_domain_guardrails(
@@ -165,8 +182,9 @@ def process_document_pipeline(db, doc_id, raw_text, stages=None, collection="doc
 
         # ---------------- Stage 4: Locations ----------------
         if should_run("location") or should_run("locations"):
-            location_result = location_extraction_service.extract_locations(analysis_text) or {}
-            raw_loc = location_result.get("enriched_location") or location_result.get("normalized") or {}
+            # ✅ FIX: Explicitly run ONLY on English-normalized text
+            location_result = location_extraction_service.extract_locations(english_text) or {}
+            raw_loc = location_result.get("enriched_location") or location_result.get("normalized") or location_result.get("location") or {}
             
             locations = {
                 "city": safe_location_value(raw_loc.get("city")),
@@ -177,15 +195,15 @@ def process_document_pipeline(db, doc_id, raw_text, stages=None, collection="doc
 
         # ---------------- Stage 5: Summary ----------------
         if should_run("summary"):
-            summary = summarization_service.summarize(analysis_text, method="lsa", sentences_count=3)
+            summary = summarization_service.summarize(english_text, method="lsa", sentences_count=3)
 
         # ---------------- Stage 6: Sentiment ----------------
         if should_run("sentiment"):
             sentiment_service = get_sentiment_service()
             sent_result = sentiment_service.analyze(
-                cleaned_text=analysis_text,
+                cleaned_text=english_text,
                 summary_text=summary,
-                raw_text=analysis_text,
+                raw_text=english_text,
                 method="auto"
             )
             sentiment = {
@@ -198,11 +216,11 @@ def process_document_pipeline(db, doc_id, raw_text, stages=None, collection="doc
 
         # ---------------- Stage 7: Keywords ----------------
         if should_run("keywords"):
-            keywords = keyword_extraction_service.extract(analysis_text, method="rake", top_n=10)
+            keywords = keyword_extraction_service.extract(english_text, method="rake", top_n=10)
 
         # ---------------- Stage 8: Entities ----------------
         if should_run("entities"):
-            entities = ner_service.extract_entities(analysis_text)
+            entities = ner_service.extract_entities(english_text)
 
         # ---------------- Type Assertions (PATCH 3) ----------------
         assert isinstance(summary, str), "Summary must be string"

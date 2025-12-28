@@ -1,21 +1,11 @@
 RSS_SOURCES = [
 
     # =====================================================
-    # 🌏 ASIA — INDIA (MARATHI)
+    # 🌏 INDIA — HINDI + ENGLISH
     # =====================================================
 
     {
-        "name": "TV9 Marathi",
-        "continent": "asia",
-        "country": "india",
-        "language": ["mr"],
-        "category": ["national", "politics", "disaster"],
-        "feed_url": "https://www.tv9marathi.com/feed",
-        "allow_follow_links": True
-    },
-
-    {
-        "name": "BBC India",
+        "name": "BBC Hindi",
         "continent": "asia",
         "country": "india",
         "language": ["hi"],
@@ -29,76 +19,167 @@ RSS_SOURCES = [
         "continent": "asia",
         "country": "india",
         "language": ["en"],
-        "category": ["national", "politics", "disaster", "business"],
+        "category": ["national", "politics", "business", "disaster"],
         "feed_url": "https://feeds.bbci.co.uk/news/world/asia/india/rss.xml",
         "allow_follow_links": True
     },
 
-
     # =====================================================
-    # 🌏 ASIA — QATAR / MIDDLE EAST (ARABIC)
+    # 🌏 MIDDLE EAST — ARABIC + ENGLISH
     # =====================================================
 
     {
-        "name": "Al Jazeera Arabic",
+        "name": "BBC Arabic",
         "continent": "asia",
-        "country": "qatar",
+        "country": "middle_east",
         "language": ["ar"],
-        "category": ["national", "politics", "disaster", "terror"],
-        "feed_url": "https://www.aljazeera.net/aljazeerarss",
-        "allow_follow_links": True
-    },
-
-    {
-        "name": "BBC Middle East",
-        "continent": "asia",
-        "country": "qatar",
-        "language": ["ar"],
-        "category": ["national", "politics", "terror"],
+        "category": ["international", "politics", "terror", "disaster"],
         "feed_url": "https://feeds.bbci.co.uk/arabic/rss.xml",
         "allow_follow_links": True
     },
 
-    # =====================================================
-    # 🌍 EUROPE — SPAIN (SPANISH)
-    # =====================================================
-
     {
-        "name": "El País",
-        "continent": "europe",
-        "country": "spain",
-        "language": ["es"],
-        "category": ["national", "politics"],
-        "feed_url": "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/portada",
+        "name": "BBC Middle East (English)",
+        "continent": "asia",
+        "country": "middle_east",
+        "language": ["en"],
+        "category": ["international", "politics", "terror"],
+        "feed_url": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml",
         "allow_follow_links": True
     },
 
     # =====================================================
-    # 🌍 EUROPE — FRANCE (FRENCH)
+    # 🌍 FRANCE / EUROPE — FRENCH + ENGLISH
     # =====================================================
 
     {
-        "name": "Le Monde",
+        "name": "BBC Afrique (French)",
         "continent": "europe",
-        "country": "france",
+        "country": "multiple",
         "language": ["fr"],
-        "category": ["national", "politics"],
-        "feed_url": "https://www.lemonde.fr/rss/une.xml",
+        "category": ["international", "politics", "disaster"],
+        "feed_url": "https://feeds.bbci.co.uk/afrique/rss.xml",
+        "allow_follow_links": True
+    },
+
+    {
+        "name": "BBC Europe (English)",
+        "continent": "europe",
+        "country": "europe",
+        "language": ["en"],
+        "category": ["international", "politics", "business"],
+        "feed_url": "https://feeds.bbci.co.uk/news/world/europe/rss.xml",
         "allow_follow_links": True
     },
 
     # =====================================================
-    # 🌎 SOUTH AMERICA — BRAZIL (PORTUGUESE)
+    # 🌎 AMERICAS — SPANISH + ENGLISH
     # =====================================================
 
     {
-        "name": "BBC Brazil",
-        "continent": "south_america",
-        "country": "brazil",
-        "language": ["pt"],
-        "category": ["national", "politics", "disaster"],
-        "feed_url": "https://feeds.bbci.co.uk/portuguese/rss.xml",
+        "name": "BBC Mundo",
+        "continent": "americas",
+        "country": "multiple",
+        "language": ["es"],
+        "category": ["international", "politics", "disaster"],
+        "feed_url": "https://feeds.bbci.co.uk/mundo/rss.xml",
         "allow_follow_links": True
     },
+
+    {
+        "name": "BBC Americas (English)",
+        "continent": "americas",
+        "country": "americas",
+        "language": ["en"],
+        "category": ["international", "politics", "business"],
+        "feed_url": "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml",
+        "allow_follow_links": True
+    },
+
+    # =====================================================
+    # 🌍 NETHERLANDS — DUTCH + ENGLISH
+    # =====================================================
+
+    {
+        "name": "BBC Europe (Dutch coverage)",
+        "continent": "europe",
+        "country": "netherlands",
+        "language": ["nl"],
+        "category": ["international", "politics"],
+        "feed_url": "https://feeds.bbci.co.uk/news/world/europe/rss.xml",
+        "allow_follow_links": True
+    },
+
+    {
+        "name": "BBC Netherlands (English)",
+        "continent": "europe",
+        "country": "netherlands",
+        "language": ["en"],
+        "category": ["international", "politics"],
+        "feed_url": "https://feeds.bbci.co.uk/news/world/europe/rss.xml",
+        "allow_follow_links": True
+    },
+
+    # =====================================================
+    # 🌏 INDONESIA — INDONESIAN + ENGLISH
+    # =====================================================
+
+    {
+        "name": "BBC Indonesia",
+        "continent": "asia",
+        "country": "indonesia",
+        "language": ["id"],
+        "category": ["national", "politics", "disaster"],
+        "feed_url": "https://feeds.bbci.co.uk/indonesia/rss.xml",
+        "allow_follow_links": True
+    },
+
+    {
+        "name": "BBC Indonesia (English)",
+        "continent": "asia",
+        "country": "indonesia",
+        "language": ["en"],
+        "category": ["international", "politics"],
+        "feed_url": "https://feeds.bbci.co.uk/news/world/asia/rss.xml",
+        "allow_follow_links": True
+    },
+
+    # =====================================================
+    # 🌏 CHINA — CHINESE + ENGLISH
+    # =====================================================
+
+    {
+        "name": "BBC Chinese",
+        "continent": "asia",
+        "country": "china",
+        "language": ["zh"],
+        "category": ["international", "politics", "business"],
+        "feed_url": "https://feeds.bbci.co.uk/zhongwen/rss.xml",
+        "allow_follow_links": True
+    },
+
+    {
+        "name": "BBC China (English)",
+        "continent": "asia",
+        "country": "china",
+        "language": ["en"],
+        "category": ["international", "politics", "business"],
+        "feed_url": "https://feeds.bbci.co.uk/news/world/asia/china/rss.xml",
+        "allow_follow_links": True
+    },
+
+    # =====================================================
+    # 🌍 GLOBAL — ENGLISH BASELINE
+    # =====================================================
+
+    {
+        "name": "BBC World News (English)",
+        "continent": "global",
+        "country": "global",
+        "language": ["en"],
+        "category": ["international", "politics", "business", "disaster"],
+        "feed_url": "https://feeds.bbci.co.uk/news/rss.xml",
+        "allow_follow_links": True
+    }
 
 ]

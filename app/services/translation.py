@@ -9,18 +9,7 @@ import time
 import os
 from typing import Dict, Optional
 
-# Redirect Argos storage & temp to D: drive
-D_CACHE_BASE = r"D:\Projects\Backend(SA)_cache"
-ARGOS_CACHE = os.path.join(D_CACHE_BASE, "argos_cache")
-TEMP_DIR = os.path.join(D_CACHE_BASE, "temp")
-
-os.makedirs(ARGOS_CACHE, exist_ok=True)
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-os.environ["ARGOS_PACKAGES_DIR"] = ARGOS_CACHE
-os.environ["TEMP"] = TEMP_DIR
-os.environ["TMP"] = TEMP_DIR
-
+# Environment variables are now set in app/__init__.py for consistency.
 from deep_translator import GoogleTranslator
 
 logger = logging.getLogger(__name__)
@@ -76,12 +65,28 @@ class TranslationService:
         self.translator = GoogleTranslator()
         self.translation_engine = "google"
         self._argos_initialized = False
+        self._unsupported_argos_paths = set()
+        
+        # Persistent Circuit Breakers (per session)
+        self._google_circuit_broken = False
+        self._last_google_failure = 0
+        self._circuit_breaker_cooldown = 300  # 5 minutes
 
     def _init_argos(self):
         """Lazy-initialize Argos Translate (avoids startup delay)."""
         if self._argos_initialized:
             return True
         try:
+            # Re-verify environment (Double-safety for Flask/multithreading)
+            D_CACHE_BASE = r"D:\Projects\Backend(SA)_cache"
+            argos_cache = os.path.join(D_CACHE_BASE, "argos_cache", "packages")
+            if os.environ.get("ARGOS_PACKAGES_DIR") != argos_cache:
+                os.environ["ARGOS_PACKAGES_DIR"] = argos_cache
+                logger.info(f"[ARGOS] Redundant env fix | setting cache path: {argos_cache}")
+
+            argos_path = os.getenv("ARGOS_PACKAGES_DIR")
+            logger.info(f"[ARGOS] Initializing with cache path: {argos_path}")
+            
             import argostranslate.package
             import argostranslate.translate
             self.argos = argostranslate.translate
@@ -95,16 +100,132 @@ class TranslationService:
             logger.error(f"Failed to initialize Argos Translate: {e}")
             return False
 
-    def _translate_with_argos(self, text, src_lang, dest_lang="en"):
-        """Performs local translation using Argos."""
+    def init_argos(self):
+        """
+        Force-refreshes Argos Translate package index and lists available languages.
+        Ensures a bulletproof initialization at app startup.
+        """
+        if not self._init_argos():
+            return
+        try:
+            import argostranslate.package
+            logger.info("🔄 Refreshing Argos package index...")
+            argostranslate.package.update_package_index()
+            
+            langs = self.argos.get_installed_languages()
+            logger.info("[ARGOS] Available languages at startup:")
+            for l in langs:
+                logger.info(f" - {l.code} ({l.name})")
+        except Exception as e:
+            logger.error(f"Failed to fully initialize Argos: {e}")
+
+    def log_argos_languages(self):
+        """Logs all installed Argos languages for debugging."""
+        # Now uses the more robust init_argos logic
+        self.init_argos()
+
+    def _resolve_argos_language(self, code: str):
+        """
+        Robust Argos language resolver.
+        Handles cases like:
+        hi  -> hi_IN
+        zh  -> zh_CN / zh_TW
+        id  -> id_ID
+        ar  -> ar_SA
+        """
+        if not code or not self._init_argos():
+            return None
+
+        code = code.lower()
+        langs = self.argos.get_installed_languages()
+
+        # 1. Exact match (best case)
+        for lang in langs:
+            if lang.code.lower() == code:
+                return lang
+
+        # 2. Prefix match (hi → hi_IN, zh → zh_CN)
+        for lang in langs:
+            if lang.code.lower().startswith(code):
+                return lang
+
+        # 3. Known aliases (extra safety)
+        aliases = {
+            "hi": ["hi_in", "hin"],
+            "zh": ["zh_cn", "zh_tw"],
+            "id": ["id_id"],
+            "ar": ["ar_sa"],
+            "fr": ["fr_fr"],
+            "es": ["es_es"],
+            "nl": ["nl_nl"],
+        }
+
+        for alias in aliases.get(code, []):
+            for lang in langs:
+                if lang.code.lower() == alias:
+                    return lang
+
+        # 4. Aggressive fallback: Language Name match (User requested)
+        for lang in langs:
+            name_lower = lang.name.lower()
+            if code == "hi" and "hindi" in name_lower:
+                return lang
+            if code == "id" and "indonesian" in name_lower:
+                return lang
+            if code == "zh" and "chinese" in name_lower:
+                return lang
+            if code == "ar" and "arabic" in name_lower:
+                return lang
+            if code == "fr" and "french" in name_lower:
+                return lang
+            if code == "es" and "spanish" in name_lower:
+                return lang
+
+        all_codes = [f"{l.code} ({l.name})" for l in langs]
+        logger.error(f"[ARGOS] Unable to resolve language code: {code} | Installed: {all_codes}")
+        return None
+
+    def _translate_with_argos(self, text: str, source_lang: str, target_lang: str, silent: bool = False):
+        """Performs local translation using Argos with robust resolution."""
         if not self._init_argos():
             return None
+            
+        path_key = f"{source_lang}->{target_lang}"
+        if path_key in self._unsupported_argos_paths:
+            return None
+
         try:
-            # Note: Argos normally requires downloading language packages first.
-            # This is a basic integration; in production, you'd ensure models are pre-loaded.
-            return self.argos.translate(text, src_lang, dest_lang)
+            if not silent:
+                logger.info(
+                    f"[ARGOS] Attempting translation | source={source_lang} target={target_lang}"
+                )
+
+            from_lang = self._resolve_argos_language(source_lang)
+            to_lang = self._resolve_argos_language(target_lang)
+
+            if not from_lang or not to_lang:
+                if path_key not in self._unsupported_argos_paths:
+                    logger.error(
+                        f"[ARGOS] Language resolution failed | from={source_lang} to={target_lang}"
+                    )
+                    self._unsupported_argos_paths.add(path_key)
+                return None
+
+            translation = from_lang.get_translation(to_lang)
+
+            if not translation:
+                if path_key not in self._unsupported_argos_paths:
+                    logger.error(
+                        f"[ARGOS] No translation path | from={from_lang.code} to={to_lang.code}"
+                    )
+                    self._unsupported_argos_paths.add(path_key)
+                return None
+
+            return translation.translate(text)
+
         except Exception as e:
-            logger.error(f"Argos translation failed: {e}")
+            if not silent:
+                logger.exception(f"[ARGOS] Translation exception: {e}")
             return None
     
     def normalize_for_translation(self, lang: str) -> str:
@@ -143,24 +264,15 @@ class TranslationService:
         return chunks
 
     def _translate_with_retry(self, translator, text):
-        """Attempts translation with exponential backoff (max 3 retries)."""
-        delay = 0.5
-        for attempt in range(1, 4):
-            try:
-                result = translator.translate(text)
-                if result:
-                    return result
-                # If result is empty string/None but no exception, might still be a failure
-                if attempt == 3:
-                    return None
-            except Exception as e:
-                if attempt == 3:
-                    logger.error(f"Translation failed after {attempt} attempts: {e}")
-                    return None
-                logger.warning(f"Translation attempt {attempt} failed, retrying in {delay}s...")
-                time.sleep(delay)
-                delay = min(delay * 2, 4.0)
-        return None
+        """Attempts translation ONCE. No retries to ensure zero latency on failure."""
+        try:
+            result = translator.translate(text)
+            if result:
+                return result
+            return None
+        except Exception as e:
+            logger.debug(f"Quick Google check failed: {e}")
+            return None
 
     def translate_text(self, text: str, target_lang: str, source_lang: str = "en") -> str:
         """
@@ -180,13 +292,67 @@ class TranslationService:
 
             # Secondary: Argos Fallback
             if not translated:
-                logger.warning(f"Google failed for {source_lang} -> {target_lang} → Falling back to Argos")
                 translated = self._translate_with_argos(text, source_lang, target_lang)
 
-            return translated if translated else text
+            return translated if translated else "[Translation Failed]"
         except Exception as e:
             logger.error(f"Generic translation failed: {e}")
-            return text
+            return "[Translation Failed]"
+
+    def translate_batch(self, texts: list[str], target_lang: str, source_lang: str = "en") -> list[str]:
+        """
+        Translates a list of strings efficiently.
+        Features: Deduplication to minimize API calls and a persistent circuit breaker.
+        """
+        if not texts:
+            return []
+
+        clean_target = self.normalize_for_translation(target_lang)
+        if source_lang == clean_target:
+            return texts
+
+        # 1. Deduplicate strings to minimize network calls
+        unique_texts = list(set([t for t in texts if t and isinstance(t, str)]))
+        translation_map = {} # Original -> Translated
+
+        # 2. Check global circuit breaker
+        current_time = time.time()
+        if self._google_circuit_broken and (current_time - self._last_google_failure < self._circuit_breaker_cooldown):
+            google_active = False
+        else:
+            if self._google_circuit_broken:
+                logger.info("[GOOGLE] Circuit breaker cooldown ended. Retrying Google...")
+                self._google_circuit_broken = False
+            google_active = True
+
+        # 3. Process unique strings
+        for text in unique_texts:
+            translated = None
+
+            # Try Google first
+            if google_active:
+                try:
+                    translator = GoogleTranslator(source=source_lang, target=clean_target)
+                    translated = self._translate_with_retry(translator, text)
+                    if not translated:
+                        logger.warning(f"[GOOGLE] Failure detected for '{text}'. Engaging session circuit breaker.")
+                        self._google_circuit_broken = True
+                        self._last_google_failure = time.time()
+                        google_active = False # Switch to Argos for rest of batch
+                except Exception as ge:
+                    logger.warning(f"[GOOGLE] Error: {ge}. Engaging session circuit breaker.")
+                    self._google_circuit_broken = True
+                    self._last_google_failure = time.time()
+                    google_active = False
+
+            # Try Argos fallback
+            if not translated:
+                translated = self._translate_with_argos(text, source_lang, clean_target, silent=True)
+
+            translation_map[text] = translated if translated else "[Translation Failed]"
+
+        # 4. Map back to original order
+        return [translation_map.get(t, "[Translation Failed]") for t in texts]
 
     def translate_to_english(self, text: str, source_language: str = 'auto') -> Dict:
         """
@@ -233,15 +399,15 @@ class TranslationService:
                 
                 # 2. Secondary: Argos Offline Fallback
                 if not translated:
-                    logger.warning(f"Google failed for chunk {idx+1}/{len(chunks)} → Falling back to Argos")
+                    self._google_circuit_broken = True
+                    self._last_google_failure = time.time()
                     translated = self._translate_with_argos(chunk, source_language, "en")
 
                 if translated:
                     translated_chunks.append(translated)
                 else:
-                    # 3. Final Fallback: Original Text
-                    logger.warning(f"All translation methods failed for chunk {idx+1}/{len(chunks)} → preserving original")
-                    translated_chunks.append(chunk)
+                    # 3. Final Fallback: Mark as failed
+                    translated_chunks.append("[Translation Failed]")
 
             translated_text = " ".join(translated_chunks)
             translation_time = time.time() - start_time

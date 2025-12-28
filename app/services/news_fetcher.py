@@ -54,7 +54,10 @@ def build_discovery_tiers(context: dict, query_language=None):
         else:
             logger.info(f"[build_discovery_tiers] No language filter (query_language is None)")
         if category != "unknown":
-            q["category"] = category
+            q["$or"] = [
+                {"category": category},              # source category
+                {"inferred_category": category}      # ML inferred category
+            ]
         return q
 
     # 1. City Tier

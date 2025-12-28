@@ -184,6 +184,7 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     logger.info("⏱ Starting RSS Scheduler (5 min interval)...")
     scheduler = RSSScheduler(interval_minutes=5)
+    app.scheduler = scheduler  # ❗ Attach to app for control via routes
     Thread(target=scheduler.start, daemon=True).start()
 
     app.run(

@@ -170,6 +170,10 @@ def fetch_category_news():
 @news_bp.route('/analyze/<doc_id>', methods=['GET'])
 @jwt_required()
 def analyze_news_item(doc_id):
+    # ⏸ Pause scheduler to prevent resource contention during entire AI & translation cycle
+    if hasattr(current_app, "scheduler"):
+        current_app.scheduler.pause()
+        
     try:
         db = current_app.db
 
@@ -269,6 +273,10 @@ def analyze_news_item(doc_id):
     except Exception as e:
         logger.exception("Level-2 analysis failed")
         return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        # ▶ Resume scheduler after entire route is finished (resumed for 200 or 500)
+        if hasattr(current_app, "scheduler"):
+            current_app.scheduler.resume()
 
 
 # ---------------------------------------------------------

@@ -1,12 +1,10 @@
 import os
-from pathlib import Path
-from argostranslate import package
 
 # ===============================
-# Cache redirection (same as app)
+# Cache redirection (SET BEFORE IMPORT)
 # ===============================
 D_CACHE_BASE = r"D:\Projects\Backend(SA)_cache"
-ARGOS_CACHE = os.path.join(D_CACHE_BASE, "argos_cache")
+ARGOS_CACHE = os.path.join(D_CACHE_BASE, "argos_cache", "packages")
 TEMP_DIR = os.path.join(D_CACHE_BASE, "temp")
 
 os.makedirs(ARGOS_CACHE, exist_ok=True)
@@ -16,6 +14,9 @@ os.environ["ARGOS_PACKAGES_DIR"] = ARGOS_CACHE
 os.environ["TEMP"] = TEMP_DIR
 os.environ["TMP"] = TEMP_DIR
 
+from pathlib import Path
+from argostranslate import package
+
 # ===============================
 # REQUIRED LANGUAGES (FINAL SET)
 # ===============================
@@ -24,12 +25,15 @@ REQUIRED_SOURCE_LANGS = {
     "ar",  # Arabic – Middle East
     "fr",  # French – Europe
     "hi",  # Hindi – India
+    #"mr",  # Marathi – India not supported by the argos
+    
 
     # ➕ Lightweight global coverage
     "es",  # Spanish – Americas
     "nl",  # Dutch – Europe (small)
-    # "id",  # Indonesian – Asia (small)
+    "id",  # Indonesian – Asia (small)
     "sw",  # Swahili – Africa (small)
+    "zh",  # Chinese (covers zh-cn, zh-tw, zh-hk)
 }
 
 TARGET_LANG = "en"
@@ -47,34 +51,35 @@ skipped = 0
 failed = 0
 
 for pkg in available_packages:
-    if pkg.to_code != TARGET_LANG:
-        continue
+    # Logic: Install if (from == REQUIRED and to == en) OR (from == en and to == REQUIRED)
+    is_to_en = (pkg.to_code == TARGET_LANG and pkg.from_code in REQUIRED_SOURCE_LANGS)
+    is_from_en = (pkg.from_code == TARGET_LANG and pkg.to_code in REQUIRED_SOURCE_LANGS)
 
-    if pkg.from_code not in REQUIRED_SOURCE_LANGS:
+    if not (is_to_en or is_from_en):
         continue
 
     key = (pkg.from_code, pkg.to_code)
 
     if key in installed_pairs:
-        print(f"✔ Already installed: {pkg.from_code} → en")
+        print(f"✔ Already installed: {pkg.from_code} → {pkg.to_code}")
         skipped += 1
         continue
 
     try:
-        print(f"⬇ Downloading {pkg.from_code} → en")
+        print(f"⬇ Downloading {pkg.from_code} → {pkg.to_code}")
         path = Path(pkg.download())
 
         if path.suffix != ".argosmodel":
-            print(f"⚠ Invalid model skipped: {pkg.from_code} → en")
+            print(f"⚠ Invalid model skipped: {pkg.from_code} → {pkg.to_code}")
             failed += 1
             continue
 
-        print(f"📦 Installing {pkg.from_code} → en")
+        print(f"📦 Installing {pkg.from_code} → {pkg.to_code}")
         package.install_from_path(str(path))
         installed += 1
 
     except Exception as e:
-        print(f"❌ Failed {pkg.from_code} → en: {e}")
+        print(f"❌ Failed {pkg.from_code} → {pkg.to_code}: {e}")
         failed += 1
 
 print("\n================ SUMMARY ================")

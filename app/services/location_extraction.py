@@ -184,25 +184,46 @@ class LocationExtractionService:
                     continue
 
                 address = geo.raw.get("address", {})
-
-                city = (
-                    address.get("city")
-                    or address.get("town")
-                    or address.get("village")
-                )
-
+                
+                # Extract hierarchical levels
+                city = address.get("city") or address.get("town") or address.get("village")
                 state = address.get("state")
                 country = address.get("country")
 
                 if not country:
                     continue
 
-                return {
-                    "city": city or "Unknown",
-                    "state": state or "Unknown",
-                    "country": country or "Unknown",
-                    "confidence": 0.9
-                }
+                # -------- SAFE HIERARCHICAL INFERENCE --------
+                
+                # Scenario A: City Mentioned -> Infer State & Country
+                if loc["location_type"] == "city":
+                    logger.info(f"[LOC] City-level inference for '{loc['entity_text']}' -> {city}, {state}, {country}")
+                    return {
+                        "city": city or loc["entity_text"], # Use mention text if city field missing
+                        "state": state or "Unknown",
+                        "country": country,
+                        "confidence": 0.9 if city else 0.7
+                    }
+
+                # Scenario B: State Mentioned -> Infer Country
+                if loc["location_type"] == "state":
+                    logger.info(f"[LOC] State-level inference for '{loc['entity_text']}' -> {state}, {country}")
+                    return {
+                        "city": "Unknown",
+                        "state": state or loc["entity_text"],
+                        "country": country,
+                        "confidence": 0.8
+                    }
+
+                # Scenario C: Country Mentioned -> NO INFERENCE (Safe Version)
+                if loc["location_type"] == "country":
+                    logger.info(f"[LOC] Country-only mention '{loc['entity_text']}' -> No inference performed")
+                    return {
+                        "city": "Unknown",
+                        "state": "Unknown",
+                        "country": country or loc["entity_text"],
+                        "confidence": 0.9
+                    }
 
             except Exception as e:
                 logger.warning(
