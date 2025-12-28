@@ -28,7 +28,7 @@ REQUIRED_SOURCE_LANGS = {
     # ➕ Lightweight global coverage
     "es",  # Spanish – Americas
     "nl",  # Dutch – Europe (small)
-    "id",  # Indonesian – Asia (small)
+    # "id",  # Indonesian – Asia (small)
     "sw",  # Swahili – Africa (small)
 }
 

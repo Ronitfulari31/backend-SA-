@@ -25,11 +25,17 @@ paginator = CursorPagination(
 ranker = ArticleRanker()
 
 
-def build_discovery_tiers(context: dict):
+def build_discovery_tiers(context: dict, query_language=None):
     """
     Build ordered MongoDB query tiers based on resolved context.
     Highest priority tier comes first.
+    
+    Args:
+        context: Resolved context dict
+        query_language: Language list to use for filtering (only if user-provided)
     """
+    # Debug logging
+    logger.info(f"[build_discovery_tiers] query_language={query_language}")
 
     tiers = []
 
@@ -37,13 +43,16 @@ def build_discovery_tiers(context: dict):
     state = context.get("state", "unknown")
     country = context.get("country", "unknown")
     continent = context.get("continent", "unknown")
-    languages = context.get("language", [])
     category = context.get("category", "unknown")
 
     def base():
         q = {}
-        if languages:
-            q["language"] = {"$in": languages}
+        # Only filter by language if explicitly provided by user
+        if query_language:
+            q["language"] = {"$in": query_language}
+            logger.info(f"[build_discovery_tiers] Adding language filter: {query_language}")
+        else:
+            logger.info(f"[build_discovery_tiers] No language filter (query_language is None)")
         if category != "unknown":
             q["category"] = category
         return q
@@ -64,8 +73,10 @@ def build_discovery_tiers(context: dict):
     if continent != "unknown":
         tiers.append({**base(), "continent": continent})
 
-    # 5. Global Tier (Always last)
-    tiers.append(base())
+    # 5. Global Tier (Only if no geographic filters specified)
+    # Don't fall back to global if user specified country/state/city
+    if city == "unknown" and state == "unknown" and country == "unknown" and continent == "unknown":
+        tiers.append(base())
 
     return tiers
 
@@ -89,10 +100,14 @@ def _format_article(doc):
     }
 
 
-def fetch_news(context: dict):
+def fetch_news(context: dict, query_language=None):
     """
     Main fetch entry point used by /api/news/fetch
     Implements Tiered Discovery + Cursor Pagination.
+    
+    Args:
+        context: Resolved context dict (includes language for analytics)
+        query_language: Language list for query filtering (only if user-provided)
     """
     # 1. Read pagination params
     limit = paginator.clamp_limit(context.get("limit"))
@@ -103,8 +118,25 @@ def fetch_news(context: dict):
     
     results = []
     seen_ids = set()
-    tiers = build_discovery_tiers(context)
-    tier_levels = ["city", "state", "country", "continent", "global"]
+    tiers = build_discovery_tiers(context, query_language=query_language)
+    # Generate tier level names dynamically to match actual tiers
+    tier_levels = []
+    city = context.get("city", "unknown")
+    state = context.get("state", "unknown")
+    country = context.get("country", "unknown")
+    continent = context.get("continent", "unknown")
+    
+    if city != "unknown":
+        tier_levels.append("city")
+    if state != "unknown":
+        tier_levels.append("state")
+    if country != "unknown":
+        tier_levels.append("country")
+    if continent != "unknown":
+        tier_levels.append("continent")
+    # Global tier is only added if no geographic filters
+    if city == "unknown" and state == "unknown" and country == "unknown" and continent == "unknown":
+        tier_levels.append("global")
     
     # We collect more than limit to allow for cross-tier filling, 
     # but we'll trim to 'limit' at the end.
@@ -252,8 +284,8 @@ def scrape_and_analyze_article(db, article_id, stages=None):
 
 # For backward compatibility with routes/news.py
 class NewsFetcherService:
-    def fetch_news_with_context(self, db, user_id, context):
-        return fetch_news(context)
+    def fetch_news_with_context(self, db, user_id, context, query_language=None):
+        return fetch_news(context, query_language=query_language)
     
     def scrape_and_analyze_article(self, db, doc_id, stages=None):
         return scrape_and_analyze_article(db, doc_id, stages)

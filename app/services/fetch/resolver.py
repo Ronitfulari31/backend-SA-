@@ -33,8 +33,10 @@ def resolve_context(params: dict, db=None) -> dict:
         scope = "global"
 
     # ---------------- LANGUAGE RESOLUTION ----------------
-    if params.get("language"):
-        languages = [params["language"]]
+    user_provided_language = params.get("language")
+    if user_provided_language:
+        languages = [user_provided_language]
+        language_source = "user_provided"
     else:
         languages = []
 
@@ -53,20 +55,22 @@ def resolve_context(params: dict, db=None) -> dict:
         elif continent != "unknown":
             languages += geo_lang_service.get_continent_languages(continent)
 
-        if not languages:
-            languages = ["en"]
+        # Remove fallback - don't default to English
+        # if not languages:
+        #     languages = ["en"]
 
         languages = list(dict.fromkeys(languages))
+        language_source = "inferred" if languages else "none"
 
     category = params.get("category") or "unknown"
 
     # ---------------- LOGGING ----------------
-    if db is not None and languages == ["en"]:
-        log_resolver_metrics(db, "resolver_fallback_used")
+    if db is not None and language_source == "inferred" and not languages:
+        log_resolver_metrics(db, "resolver_no_languages_found")
 
     logger.info(
-        "[resolver] scope=%s | city=%s | state=%s | country=%s | languages=%s |category=%s",
-        scope, city, state, country, languages, category
+        "[resolver] scope=%s | city=%s | state=%s | country=%s | languages=%s | language_source=%s | category=%s",
+        scope, city, state, country, languages, language_source, category
     )
 
     return {
@@ -75,6 +79,7 @@ def resolve_context(params: dict, db=None) -> dict:
         "country": country,
         "state": state,
         "city": city,
-        "language": languages,
+        "language": languages,  # For context/analytics/UI
+        "language_source": language_source,  # Track source
         "category": category
     }

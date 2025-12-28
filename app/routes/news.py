@@ -136,9 +136,11 @@ def fetch_category_news():
         db = current_app.db
 
         # Map old API to new fetch_news
+        # Don't hardcode language - let it be inferred or empty
         context = {
             "category": category.lower(),
-            "language": ["en"],
+            "language": [],  # Empty - no language filtering
+            "language_source": "none",
             "country": "unknown",
             "continent": "unknown",
             "scope": "global"
@@ -147,7 +149,8 @@ def fetch_category_news():
         result = news_fetcher_service.fetch_news_with_context(
             db=db,
             user_id=user_id,
-            context=context
+            context=context,
+            query_language=None  # No language filtering
         )
 
         return jsonify(result), 200
@@ -326,14 +329,23 @@ def fetch_news_with_params():
         user_id = get_jwt_identity()
         db = current_app.db
 
-        # 🔹 Resolve context (already correct)
+        # Extract user-provided language separately (for query filtering)
+        query_language = None
+        if request.args.getlist("language"):
+            query_language = request.args.getlist("language")
+
+        # 🔹 Resolve context (for analytics/UI, but not for filtering)
         context = resolve_context(params, db=db)
 
-        # 🔹 Fetch news using new logic (metadata already enriched in fetcher)
+        # Debug logging
+        logger.info(f"[fetch] query_language={query_language}, context.language={context.get('language')}, language_source={context.get('language_source')}")
+
+        # 🔹 Fetch news using new logic (pass query_language separately)
         result = news_fetcher_service.fetch_news_with_context(
             db=db,
             user_id=user_id,
-            context=context
+            context=context,
+            query_language=query_language
         )
 
         return jsonify({

@@ -182,7 +182,7 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     # START BACKGROUND SCHEDULER
     # ---------------------------------------------------------
-    logger.info("⏱ Starting RSS Scheduler (15 min interval)...")
+    logger.info("⏱ Starting RSS Scheduler (5 min interval)...")
     scheduler = RSSScheduler(interval_minutes=5)
     Thread(target=scheduler.start, daemon=True).start()
 
