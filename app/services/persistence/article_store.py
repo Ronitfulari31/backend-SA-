@@ -6,21 +6,30 @@ from app.models.article import Article
 
 class ArticleStore:
     def __init__(self):
-        self.db = get_db()
-        self.collection = self.db.articles
+        self._collection = None
 
-        # Ensure unique index on URL
-        self.collection.create_index(
-            "original_url",
-            unique=True,
-            background=True
-        )
+    @property
+    def collection(self):
+        if self._collection is None:
+            from app.database import get_db
+            db = get_db()
+            if db is None:
+                raise RuntimeError("Database not initialized. Call init_db(app) first.")
+            self._collection = db.articles
+            
+            # Ensure unique index on URL
+            self._collection.create_index(
+                "original_url",
+                unique=True,
+                background=True
+            )
 
-        # TTL index (optional, 24h cache)
-        self.collection.create_index(
-            "created_at",
-            expireAfterSeconds=86400
-        )
+            # TTL index (optional, 24h cache)
+            self._collection.create_index(
+                "created_at",
+                expireAfterSeconds=86400
+            )
+        return self._collection
 
     def save_if_new(self, article: Article):
         """

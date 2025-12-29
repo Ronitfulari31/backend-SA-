@@ -118,6 +118,40 @@ def list_news():
 
 
 # ---------------------------------------------------------
+# GET SINGLE ARTICLE (LEVEL-1)
+# ---------------------------------------------------------
+
+@news_bp.route('/article/<doc_id>', methods=['GET'])
+@jwt_required()
+def get_article(doc_id):
+    try:
+        db = current_app.db
+        doc = db.articles.find_one({'_id': ObjectId(doc_id)})
+        
+        if not doc:
+            return jsonify({'status': 'error', 'message': 'Article not found'}), 404
+            
+        return jsonify({
+            'status': 'success',
+            'article': {
+                'id': str(doc['_id']),
+                '_id': str(doc['_id']),
+                'title': doc.get('title'),
+                'source': doc.get('source'),
+                'original_url': doc.get('original_url'),
+                'image_url': doc.get('image_url'),
+                'published_date': doc.get('published_date'),
+                'summary': doc.get('summary') or doc.get('rss_summary'),
+                'category': doc.get('category'),
+                'analyzed': doc.get('analyzed', False)
+            }
+        }), 200
+    except Exception as e:
+        logger.error(f"Get article error: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# ---------------------------------------------------------
 # CATEGORY-BASED FETCH (LEVEL-1) 
 # ---------------------------------------------------------
 
@@ -289,7 +323,12 @@ def get_news_full_view(doc_id):
     try:
         db = current_app.db
 
-        doc = db.documents.find_one({'_id': ObjectId(doc_id)})
+        # Check in articles collection first
+        doc = db.articles.find_one({'_id': ObjectId(doc_id)})
+        if not doc:
+            # Fallback to documents
+            doc = db.documents.find_one({'_id': ObjectId(doc_id)})
+            
         if not doc:
             return jsonify({'status': 'error', 'message': 'Not found'}), 404
 

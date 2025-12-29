@@ -44,6 +44,8 @@ def build_discovery_tiers(context: dict, query_language=None):
     country = context.get("country", "unknown")
     continent = context.get("continent", "unknown")
     category = context.get("category", "unknown")
+    source = context.get("source", "unknown")
+    analyzed = context.get("analyzed", "false")
 
     def base():
         q = {}
@@ -53,6 +55,21 @@ def build_discovery_tiers(context: dict, query_language=None):
             logger.info(f"[build_discovery_tiers] Adding language filter: {query_language}")
         else:
             logger.info(f"[build_discovery_tiers] No language filter (query_language is None)")
+        
+        # Add source filter if provided
+        if source != "unknown":
+            q["source"] = source
+            logger.info(f"[build_discovery_tiers] Adding source filter: {source}")
+        
+        # Add analyzed filter if requested
+        # Handle both string "true" and boolean True
+        if analyzed in ["true", True, "True", "1"]:
+            q["analyzed"] = True
+            logger.info(f"[build_discovery_tiers] Adding analyzed filter: True (input was: {analyzed})")
+        else:
+            logger.info(f"[build_discovery_tiers] NOT adding analyzed filter (input was: {analyzed})")
+        
+        # Add category filter
         if category != "unknown":
             q["$or"] = [
                 {"category": category},              # source category
@@ -76,10 +93,8 @@ def build_discovery_tiers(context: dict, query_language=None):
     if continent != "unknown":
         tiers.append({**base(), "continent": continent})
 
-    # 5. Global Tier (Only if no geographic filters specified)
-    # Don't fall back to global if user specified country/state/city
-    if city == "unknown" and state == "unknown" and country == "unknown" and continent == "unknown":
-        tiers.append(base())
+    # 5. Global Tier (Always fallback to global to ensure we don't hide any articles)
+    tiers.append(base())
 
     return tiers
 
@@ -107,21 +122,16 @@ def fetch_news(context: dict, query_language=None):
     """
     Main fetch entry point used by /api/news/fetch
     Implements Tiered Discovery + Cursor Pagination.
-    
-    Args:
-        context: Resolved context dict (includes language for analytics)
-        query_language: Language list for query filtering (only if user-provided)
     """
     # 1. Read pagination params
     limit = paginator.clamp_limit(context.get("limit"))
     cursor = context.get("cursor")
     cursor_filter = paginator.build_cursor_filter(cursor)
     
-    since = datetime.utcnow() - timedelta(minutes=30)
-    
     results = []
     seen_ids = set()
     tiers = build_discovery_tiers(context, query_language=query_language)
+    
     # Generate tier level names dynamically to match actual tiers
     tier_levels = []
     city = context.get("city", "unknown")
@@ -137,13 +147,17 @@ def fetch_news(context: dict, query_language=None):
         tier_levels.append("country")
     if continent != "unknown":
         tier_levels.append("continent")
-    # Global tier is only added if no geographic filters
-    if city == "unknown" and state == "unknown" and country == "unknown" and continent == "unknown":
+    
+    # Global tier is already added in build_discovery_tiers in the new logic
+    # but we need to ensure the tier_levels matches the tiers list.
+    # Actually, build_discovery_tiers now always adds 'global' at the end.
+    # Let's ensure tier_levels length matches tiers length.
+    while len(tier_levels) < len(tiers):
         tier_levels.append("global")
     
     # We collect more than limit to allow for cross-tier filling, 
     # but we'll trim to 'limit' at the end.
-    MAX_COLLECTION = 100 
+    MAX_COLLECTION = 200 
 
     for tier_level, tier_query in zip(tier_levels, tiers):
         if len(results) >= MAX_COLLECTION:
@@ -156,26 +170,12 @@ def fetch_news(context: dict, query_language=None):
                 "$and": [match_stage, cursor_filter]
             }
 
-        # Add freshness filter (unless strictly paginating deep)
-        match_stage["created_at"] = {"$gte": since}
-
-        # Aggregation Pipeline for this tier
+        # Simplified Pipeline: Just match, sort, and limit. 
+        # (Grouping by source was too restrictive for a complete feed)
         pipeline = [
             { "$match": match_stage },
             { "$sort": { "created_at": -1, "_id": -1 } },
-            {
-                "$group": {
-                    "_id": "$source",
-                    "articles": { "$push": "$$ROOT" }
-                }
-            },
-            {
-                "$project": {
-                    "articles": { "$slice": ["$articles", 15] }
-                }
-            },
-            { "$unwind": "$articles" },
-            { "$replaceRoot": { "newRoot": "$articles" } }
+            { "$limit": MAX_COLLECTION }
         ]
 
         # Execute aggregation
@@ -198,39 +198,53 @@ def fetch_news(context: dict, query_language=None):
 
     # 2. Final Sorting (Rank first, then recency)
     results.sort(
-        key=lambda a: (-a["_rank_score"], a["created_at"], str(a["_id"])),
-        reverse=False # Handled by -score and DESC logic
+        key=lambda a: (
+            a.get("_rank_score", 0), 
+            a.get("created_at").timestamp() if a.get("created_at") and hasattr(a.get("created_at"), "timestamp") else 0,
+            str(a.get("_id"))
+        ),
+        reverse=True
     )
 
     # 3. Trim results + build next cursor
+    has_more = len(results) > limit
     results = results[:limit]
     
     next_cursor = None
-    if results:
+    if results and has_more:
         next_cursor = paginator.encode_cursor(results[-1])
 
-    # 4. Final response (Cleanup rank internal field)
+    # 4. Final response
     if not results:
+        # Get base query for total even if no results
+        memo_tiers = build_discovery_tiers(context, query_language=query_language)
+        base_query = memo_tiers[-1] if memo_tiers else {}
+        total_matching = article_store.collection.count_documents(base_query)
+
         return {
             "status": "success",
             "count": 0,
+            "total": total_matching,
             "articles": [],
-            "message": "No articles available yet. Please try again shortly.",
+            "message": "No articles found matching your filters.",
             "context": context,
             "empty": True
         }
 
-    formatted_articles = []
-    for a in results:
-        a.pop("_rank_score", None)
-        formatted_articles.append(_format_article(a))
+    formatted_articles = [_format_article(a) for a in results]
+
+    # Calculate accurate total matching documents (using the base global query)
+    memo_tiers = build_discovery_tiers(context, query_language=query_language)
+    base_query = memo_tiers[-1] if memo_tiers else {}
+    total_matching = article_store.collection.count_documents(base_query)
 
     return {
         "status": "success",
         "count": len(results),
+        "total": total_matching,
         "articles": formatted_articles,
         "next_cursor": next_cursor,
-        "has_more": bool(next_cursor),
+        "has_more": has_more,
         "context": context,
         "cache_hit": True
     }

@@ -63,14 +63,16 @@ def resolve_context(params: dict, db=None) -> dict:
         language_source = "inferred" if languages else "none"
 
     category = params.get("category") or "unknown"
+    source = params.get("source") or "unknown"
+    analyzed = params.get("analyzed") or "false"
 
     # ---------------- LOGGING ----------------
     if db is not None and language_source == "inferred" and not languages:
         log_resolver_metrics(db, "resolver_no_languages_found")
 
     logger.info(
-        "[resolver] scope=%s | city=%s | state=%s | country=%s | languages=%s | language_source=%s | category=%s",
-        scope, city, state, country, languages, language_source, category
+        "[resolver] scope=%s | city=%s | state=%s | country=%s | languages=%s | language_source=%s | category=%s | source=%s | analyzed=%s",
+        scope, city, state, country, languages, language_source, category, source, analyzed
     )
 
     return {
@@ -81,5 +83,7 @@ def resolve_context(params: dict, db=None) -> dict:
         "city": city,
         "language": languages,  # For context/analytics/UI
         "language_source": language_source,  # Track source
-        "category": category
+        "category": category,
+        "source": source,
+        "analyzed": analyzed
     }

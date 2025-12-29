@@ -34,11 +34,15 @@ def translate_analysis_additive(analysis_en, target_lang, translator, original_d
 
     # Summary
     summary_val = analysis_en.get("summary")
-    if not use_original_summary:
-        if isinstance(summary_val, dict) and "text" in summary_val:
-            strings_to_translate.append(summary_val["text"])
-            mapping.append(("summary_dict", None, None))
+    if summary_val:
+        if isinstance(summary_val, dict):
+            # Extract text from dict and translate it
+            summary_text = summary_val.get("text", "")
+            if summary_text:
+                strings_to_translate.append(summary_text)
+                mapping.append(("summary_dict", None, None))
         elif isinstance(summary_val, str):
+            # Translate string summary
             strings_to_translate.append(summary_val)
             mapping.append(("summary_str", None, None))
     else:
@@ -77,7 +81,7 @@ def translate_analysis_additive(analysis_en, target_lang, translator, original_d
 
     # 3. Redistribute results
     translated = {
-        "summary": analysis_en.get("summary"),
+        "summary": "",  # Will be filled by translation
         "keywords": list(analysis_en.get("keywords", [])),
         "entities": [dict(e) for e in analysis_en.get("entities", [])],
         "location": dict(analysis_en.get("location", {})),

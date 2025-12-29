@@ -200,5 +200,31 @@ class Document:
         )
 
     @staticmethod
+    def get_by_filters(db, user_id=None, event_type=None, sentiment=None, language=None, source=None, limit=100):
+        """Get documents with optional filtering and sorting"""
+        query = {}
+        
+        if user_id:
+            query['user_id'] = user_id
+            
+        if event_type:
+            query['event_type'] = event_type
+            
+        if sentiment:
+            query['sentiment.label'] = sentiment
+            
+        if language:
+            query['language'] = language
+            
+        if source:
+            query['source'] = source
+        else:
+            # Default: Exclude pasted text from main lists
+            query['source'] = {'$ne': 'pasted_text'}
+            
+        # Sort by created_at descending (newest first)
+        return list(db.documents.find(query).sort('created_at', -1).limit(limit))
+
+    @staticmethod
     def get_by_id(db, doc_id):
         return db.documents.find_one({'_id': ObjectId(doc_id)})

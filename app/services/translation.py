@@ -153,6 +153,7 @@ class TranslationService:
         aliases = {
             "hi": ["hi_in", "hin"],
             "zh": ["zh_cn", "zh_tw"],
+            "zh-cn": ["zh"],
             "id": ["id_id"],
             "ar": ["ar_sa"],
             "fr": ["fr_fr"],
@@ -285,6 +286,7 @@ class TranslationService:
         try:
             # Normalize target language
             target_lang = self.normalize_for_translation(target_lang)
+            source_lang = self.normalize_for_translation(source_lang)
             
             # Primary: Google
             translator = GoogleTranslator(source=source_lang, target=target_lang)
@@ -308,6 +310,7 @@ class TranslationService:
             return []
 
         clean_target = self.normalize_for_translation(target_lang)
+        source_lang = self.normalize_for_translation(source_lang)
         if source_lang == clean_target:
             return texts
 
@@ -360,8 +363,9 @@ class TranslationService:
         """
         start_time = time.time()
         
-        # Normalize source language for engine compatibility
-        source_language = self.normalize_for_translation(source_language)
+        # Don't normalize 'auto' - let Google Translate handle auto-detection
+        if source_language != 'auto':
+            source_language = self.normalize_for_translation(source_language)
         
         try:
             # If text is already in English or very short, skip translation
@@ -375,7 +379,7 @@ class TranslationService:
                     'skipped': True
                 }
             
-            # If source is already English, skip
+            # If source is already English (but not auto), skip
             if source_language == 'en':
                 logger.info("Text already in English, skipping translation")
                 return {
@@ -391,6 +395,17 @@ class TranslationService:
             chunks = self._chunk_text(text, max_len=4000)
             translated_chunks = []
             
+            # Detect actual language if source is 'auto'
+            detected_language = source_language
+            if source_language == 'auto':
+                try:
+                    from langdetect import detect
+                    detected_language = detect(text[:500])  # Detect from first 500 chars
+                    logger.info(f"Auto-detected language: {detected_language}")
+                except Exception as e:
+                    logger.warning(f"Language detection failed: {e}, using 'auto'")
+                    detected_language = 'auto'
+            
             translator = GoogleTranslator(source=source_language, target='en')
             
             for idx, chunk in enumerate(chunks):
@@ -401,7 +416,7 @@ class TranslationService:
                 if not translated:
                     self._google_circuit_broken = True
                     self._last_google_failure = time.time()
-                    translated = self._translate_with_argos(chunk, source_language, "en")
+                    translated = self._translate_with_argos(chunk, detected_language if detected_language != 'auto' else source_language, "en")
 
                 if translated:
                     translated_chunks.append(translated)
@@ -412,11 +427,11 @@ class TranslationService:
             translated_text = " ".join(translated_chunks)
             translation_time = time.time() - start_time
             
-            logger.info(f"Translation complete: {source_language} -> en ({len(chunks)} chunks, {translation_time:.3f}s)")
+            logger.info(f"Translation complete: {detected_language} -> en ({len(chunks)} chunks, {translation_time:.3f}s)")
             
             return {
                 'translated_text': translated_text,
-                'original_language': source_language,
+                'original_language': detected_language,
                 'translation_engine': self.translation_engine,
                 'translation_time': round(translation_time, 3),
                 'success': True,

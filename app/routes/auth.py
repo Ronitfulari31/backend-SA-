@@ -8,14 +8,16 @@ import logging
 import traceback
 
 logger = logging.getLogger(__name__)
-auth_bp = Blueprint('auth_v1', __name__, url_prefix='/api/auth')
+auth_bp = Blueprint('auth_v1', __name__)
 
 
 @auth_bp.route('/register', methods=['POST'])
 def register():
     """User registration endpoint"""
     try:
-        logger.info("=== REGISTER REQUEST RECEIVED ===")
+        logger.info(">>> AUTH: Register endpoint reached")
+        logger.info(f">>> Origin: {request.headers.get('Origin')}")
+        logger.info(f">>> Method: {request.method}")
         
         if current_app.db is None:
             logger.error("Database is None")
@@ -27,8 +29,10 @@ def register():
         logger.info(f"Request Content-Type: {request.content_type}")
         logger.info(f"Request Data (raw): {request.data}")
         
-        data = request.get_json()
-        logger.info(f"Parsed JSON data: {data}")
+        logger.info(f">>> Body length: {request.content_length}")
+        
+        data = request.get_json(silent=True)
+        logger.info(f">>> Parsed JSON data: {data}")
         
         # Validate required fields
         if not data or not all(k in data for k in ('username', 'email', 'password')):

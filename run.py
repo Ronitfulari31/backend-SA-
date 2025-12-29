@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------
 
 app = create_app()
-init_db(app)
+# init_db(app)  # REMOVED: Already called inside create_app()
 
 # ---------------------------------------------------------
 # IMPORT & REGISTER BLUEPRINTS
@@ -74,12 +74,16 @@ app.register_blueprint(evaluation_bp, url_prefix="/api/evaluation")
 app.register_blueprint(news_bp, url_prefix="/api/news")
 app.register_blueprint(coverage_bp)
 
+from app.routes.translation import translation_bp
+app.register_blueprint(translation_bp, url_prefix="/api/translation")
+
 logger.info("✓ Authentication API registered")
 logger.info("✓ Documents API registered")
 logger.info("✓ Dashboard API registered")
 logger.info("✓ Evaluation API registered")
 logger.info("✓ News API registered")
 logger.info("✓ Coverage API registered")
+logger.info("✓ Translation API registered")
 
 # ---------------------------------------------------------
 # HEALTH CHECK
